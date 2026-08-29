@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline/promises');
 const { parseArgs } = require('util');
 const qrcode = require('qrcode');
 const { AGENT_BINARIES, AGENT_IDS, HeadlessProviderService } = require('../infrastructure/headless/headless-provider-service');
@@ -33,7 +32,7 @@ Usage:
 
 setup installs every supported agent CLI and its CodeAgentSwarm MCP. serve checks that setup automatically,
 starts CAS Cloud, connects it to the relay and
-prints a one-time QR for a CodeAgentSwarm client. Projects and authorized clone roots are
+prints a one-time QR and pairing code for a CodeAgentSwarm client. Projects and authorized clone roots are
 host-local configuration; either repeatable flag may be omitted.
 `;
 }
@@ -116,7 +115,12 @@ async function setupCloud(options = {}) {
     serverSource: mcpAsset('mcp-stdio-server.js'),
     launcherSource: mcpAsset('antigravity-mcp-launcher.js'),
   });
-  (options.output || console.log)('CodeAgentSwarm MCP: configured for every agent ✓');
+  const output = options.output || console.log;
+  if (mcp.failures.length) {
+    output(`CodeAgentSwarm MCP conflicts left unchanged: ${mcp.failures.map(({ agent }) => agent).join(', ')}`);
+  } else {
+    output('CodeAgentSwarm MCP: configured for every agent ✓');
+  }
   return { ...providers, mcp };
 }
 
@@ -141,10 +145,8 @@ async function serve({ project: projectPaths = [], projectsRoot: projectRoots = 
     void (async () => {
       if (event.kind === 'pair.scanned') {
         const code = String(event.verificationCode || '').padStart(6, '0');
-        const terminal = readline.createInterface({ input: process.stdin, output: process.stdout });
-        const answer = await terminal.question(`Allow ${event.device?.name || 'mobile device'}? Code ${code} [y/N] `);
-        terminal.close();
-        await host.relay.confirmPairing(event.pairingId, /^y(es)?$/i.test(answer.trim()));
+        console.log(`Approving ${event.device?.name || 'mobile device'} with verification code ${code}.`);
+        await host.relay.confirmPairing(event.pairingId, true);
       } else if (event.kind === 'pair.completed') {
         console.log(`${event.device?.name || 'Mobile device'} connected.`);
       } else if (event.kind === 'mobile.connected') {
@@ -162,6 +164,7 @@ async function serve({ project: projectPaths = [], projectsRoot: projectRoots = 
   console.log(`Runtime: ${host.identity.runtimeId}`);
   console.log(`Pairing expires: ${new Date(pairing.expiresAt).toLocaleString()}`);
   console.log(await qrcode.toString(link, { type: 'terminal', small: true, errorCorrectionLevel: 'L' }));
+  console.log(`Pairing code: ${pairing.pairingCode}`);
   console.log(link);
   console.log('\nPress Ctrl+C to stop.');
 

@@ -63,9 +63,9 @@ systemctl --user daemon-reload
 ```
 
 Use `loginctl enable-linger "$USER"` only when the runtime must remain online
-after logout. The service cannot accept a first-time pairing confirmation
-without a terminal; run `cas-cli serve` interactively once to pair, then enable
-the service. The runtime has no inbound listener.
+after logout. The one-time QR or eight-character code authorizes its own pairing,
+so a headless service accepts it without waiting for terminal input. The runtime
+has no inbound listener.
 
 ## Smoke check
 

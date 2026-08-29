@@ -19,13 +19,10 @@ async function setupHeadlessMcp({
     fs.chmodSync(target, 0o755);
   }
   const result = await registry.enableMcpForAll();
-  if (!result.success) {
-    const failed = Object.entries(result.results || {})
-      .filter(([, value]) => value?.success === false)
-      .map(([agent]) => agent);
-    throw new Error(`CAS Cloud could not configure MCP for: ${failed.join(', ') || 'one or more agents'}`);
-  }
-  return { runtimeDir, agents: registry.getAllIds() };
+  const failures = Object.entries(result.results || {})
+    .filter(([, value]) => value?.success === false)
+    .map(([agent, value]) => ({ agent, message: value.message || 'MCP setup failed' }));
+  return { runtimeDir, agents: registry.getAllIds(), failures };
 }
 
 module.exports = { setupHeadlessMcp };
