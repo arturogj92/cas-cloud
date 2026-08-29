@@ -1,0 +1,20 @@
+[Unit]
+Description=CAS Cloud runtime
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Add the npm global bin directory for the service account if it is not one of
+# these defaults (for example an nvm-managed Node installation).
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=%h/.config/codeagentswarm/cas-cli.env
+# Replace both paths. --project registers existing work; --projects-root
+# authorizes remote registration and cloning below that directory.
+ExecStart=/usr/bin/env cas-cli serve --project /srv/code/project --projects-root /srv/code
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

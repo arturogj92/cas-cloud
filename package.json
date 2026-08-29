@@ -1,0 +1,42 @@
+{
+  "name": "codeagentswarm",
+  "version": "2.3.0",
+  "description": "CAS Cloud runtime for remote CodeAgentSwarm sessions",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "commonjs",
+  "bin": {
+    "cas-cli": "dist/cas.js",
+    "cas": "dist/cas.js"
+  },
+  "files": [
+    "dist/*.js",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "scripts/cas-cli-smoke.sh",
+    "systemd/cas-cli.service.example"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "prepack": "npm run build",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "better-sqlite3": "^12.9.0",
+    "qrcode": "^1.5.4",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

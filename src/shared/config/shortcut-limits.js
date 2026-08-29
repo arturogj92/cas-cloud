@@ -1,0 +1,3 @@
+const MAX_TERMINAL_SHORTCUTS = 10;
+
+module.exports = { MAX_TERMINAL_SHORTCUTS };
