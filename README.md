@@ -153,6 +153,23 @@ and it strips secret-like variables before invoking npm. If the runtime sets
 times out after ten minutes by default; systemd leaves the bounded health check
 and rollback in control instead of killing the updater mid-switch.
 
+### One-time migration from `codeagentswarm`
+
+The updater bundled with legacy `codeagentswarm@2.4.0` cannot recognize a scoped
+package. Leave the managed service and `current` symlink in place, then launch the
+new updater once through `npx` from the same environment as the updater service:
+
+```sh
+CAS_CLI_INSTALL_ROOT="$HOME/.local/share/codeagentswarm-cloud" \
+CAS_CLI_UPDATE_SPEC="@codeagentswarm/cas-cloud@2.4.1" \
+npx --yes "@codeagentswarm/cas-cloud@2.4.1" update
+```
+
+Carry over any non-secret `CAS_CLI_STATE`, `CAS_CLI_SYSTEMD_SCOPE` and
+`CAS_CLI_SERVICE` settings from `cas-cli-update.env`. This runs the new updater
+against the legacy layout, so it still defers active sessions, health-checks the
+scoped release and rolls back on failure. Do not switch the symlink by hand.
+
 CAS Cloud writes only resumable, active session metadata to a mode-`0600` local
 state file. A restart reopens those provider conversations and restores their
 title, project, status, and minimized state with at most six provider handshakes
