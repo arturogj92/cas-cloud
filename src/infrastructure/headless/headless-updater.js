@@ -54,10 +54,15 @@ function installRoot(env = process.env) {
 }
 
 function installedVersion(prefix) {
-  const manifestPath = path.join(prefix, 'node_modules', 'codeagentswarm', 'package.json');
+  const installed = [
+    ['@codeagentswarm/cas-cloud', path.join(prefix, 'node_modules', '@codeagentswarm', 'cas-cloud', 'package.json')],
+    ['codeagentswarm', path.join(prefix, 'node_modules', 'codeagentswarm', 'package.json')],
+  ].find(([, manifestPath]) => fs.existsSync(manifestPath));
   try {
+    if (!installed) throw new Error('missing manifest');
+    const [packageName, manifestPath] = installed;
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    if (manifest.name !== 'codeagentswarm'
+    if (manifest.name !== packageName
       || typeof manifest.version !== 'string'
       || manifest.version.length > 64
       || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(manifest.version || '')) {
@@ -142,7 +147,7 @@ async function updateInstallation({
   const releasesRoot = path.join(root, 'releases');
   const stage = path.join(releasesRoot, `.staging-${process.pid}-${crypto.randomUUID()}`);
   const npm = env.CAS_CLI_NPM || (process.platform === 'win32' ? 'npm.cmd' : 'npm');
-  const spec = env.CAS_CLI_UPDATE_SPEC || 'codeagentswarm@latest';
+  const spec = env.CAS_CLI_UPDATE_SPEC || '@codeagentswarm/cas-cloud@latest';
   const commandEnv = subprocessEnv(env);
   const installSeconds = Number(env.CAS_CLI_UPDATE_INSTALL_TIMEOUT_SECONDS || 600);
   const installTimeoutMs = Number.isFinite(installSeconds) && installSeconds >= 60 && installSeconds <= 1200

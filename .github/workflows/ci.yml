@@ -23,6 +23,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - run: npx --yes . --version
       - run: node dist/cas.js --version
       - run: node dist/cas.js doctor
       - run: npm pack --dry-run --json --silent

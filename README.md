@@ -7,7 +7,7 @@ Run CAS Cloud on a macOS or Ubuntu host and connect through the encrypted CodeAg
 Node.js 20 or newer is required.
 
 ```sh
-npm install --global codeagentswarm
+npm install --global @codeagentswarm/cas-cloud
 cas-cli --version
 cas-cli doctor
 cas-cli serve \
@@ -16,8 +16,7 @@ cas-cli serve \
   --projects-root /absolute/path/to/clones
 ```
 
-`npx codeagentswarm cloud ...` works without a global install. `serve` is the
-equivalent command for an installed `cas-cli`. Before opening
+`npx @codeagentswarm/cas-cloud serve ...` works without a global install. Before opening
 the relay, `serve` checks and installs the seven supported agent CLIs and the
 bundled CodeAgentSwarm MCP. It also installs the guarded global instructions
 that publish each session's title, activity and work-phase status. Run
@@ -44,12 +43,20 @@ links approved, a Mac session can perform the same explicit read or remote start
 on CAS Cloud. Direct message injection into an existing cross-host session stays
 disabled.
 
-This is source-available software under the PolyForm Noncommercial License 1.0.0,
-not OSI-approved open source. Commercial use is not permitted unless
-Arturo Garcia grants a separate written license. Contact
+Except for components identified in `THIRD_PARTY_NOTICES.md`, this is
+source-available software under the PolyForm Noncommercial License 1.0.0, not
+OSI-approved open source. Commercial use of Arturo Garcia's CAS Cloud code
+requires a separate written license from Arturo Garcia. Contact
 `hello@codeagentswarm.com` for commercial licensing.
 
-`cas-cli` is the collision-safe executable name. The shorter `cas` alias is also installed.
+CAS Cloud is not a separate rewrite of CodeAgentSwarm. This repository is a
+generated, independently buildable release mirror of the shared headless runtime.
+The canonical private source exports only that tested runtime boundary; Desktop,
+Mobile, the control plane and deployment secrets are not included.
+
+`cas-cli` is the collision-safe executable name. The `cas-cloud` alias lets npm
+infer the executable for `npx @codeagentswarm/cas-cloud`; the shorter `cas` alias
+is also installed.
 
 ## Ephemeral development previews
 
@@ -104,7 +111,7 @@ Bootstrap that managed installation once:
 
 ```sh
 mkdir -p "$HOME/.local/share/codeagentswarm-cloud/releases/initial"
-npm install --prefix "$HOME/.local/share/codeagentswarm-cloud/releases/initial" --omit=dev --no-audit --no-fund codeagentswarm@latest
+npm install --prefix "$HOME/.local/share/codeagentswarm-cloud/releases/initial" --omit=dev --no-audit --no-fund @codeagentswarm/cas-cloud@latest
 ln -sfn "$HOME/.local/share/codeagentswarm-cloud/releases/initial" "$HOME/.local/share/codeagentswarm-cloud/current"
 ```
 
@@ -117,9 +124,9 @@ line in both services to include that Node version's `bin` directory.
 
 ```sh
 mkdir -p ~/.config/systemd/user ~/.config/codeagentswarm
-cp "$HOME/.local/share/codeagentswarm-cloud/current/node_modules/codeagentswarm/systemd/cas-cli.service.example" ~/.config/systemd/user/cas-cli.service
-cp "$HOME/.local/share/codeagentswarm-cloud/current/node_modules/codeagentswarm/systemd/cas-cli-update.service.example" ~/.config/systemd/user/cas-cli-update.service
-cp "$HOME/.local/share/codeagentswarm-cloud/current/node_modules/codeagentswarm/systemd/cas-cli-update.timer.example" ~/.config/systemd/user/cas-cli-update.timer
+cp "$HOME/.local/share/codeagentswarm-cloud/current/node_modules/@codeagentswarm/cas-cloud/systemd/cas-cli.service.example" ~/.config/systemd/user/cas-cli.service
+cp "$HOME/.local/share/codeagentswarm-cloud/current/node_modules/@codeagentswarm/cas-cloud/systemd/cas-cli-update.service.example" ~/.config/systemd/user/cas-cli-update.service
+cp "$HOME/.local/share/codeagentswarm-cloud/current/node_modules/@codeagentswarm/cas-cloud/systemd/cas-cli-update.timer.example" ~/.config/systemd/user/cas-cli-update.timer
 touch ~/.config/codeagentswarm/cas-cli.env
 touch ~/.config/codeagentswarm/cas-cli-update.env
 chmod 600 ~/.config/codeagentswarm/cas-cli.env ~/.config/codeagentswarm/cas-cli-update.env
@@ -134,7 +141,7 @@ systemctl --user daemon-reload
 ```
 
 The timer checks hourly. It defers while any agent is producing a response. Once
-idle, it installs `codeagentswarm@latest` in a new release directory, switches
+idle, it installs `@codeagentswarm/cas-cloud@latest` in a new release directory, switches
 the symlink, restarts CAS Cloud, and waits up to twenty-five minutes for the new runtime
 to report healthy. If that check fails, it restores the previous symlink and
 restarts the old version. Set `CAS_CLI_UPDATE_SPEC` in
@@ -167,7 +174,7 @@ On Ubuntu or macOS, run the installed `cas-cli` binary's local checks without
 starting a relay connection or writing CLI state:
 
 ```sh
-"$(npm root -g)/codeagentswarm/scripts/cas-cli-smoke.sh"
+"$(npm root -g)/@codeagentswarm/cas-cloud/scripts/cas-cli-smoke.sh"
 ```
 
 Set `CAS_CLI_BIN` when the binary is not on `PATH`, or `CAS_CLI_PACKAGE_DIR`

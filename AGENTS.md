@@ -19,9 +19,9 @@ that an operator may place behind their own TLS reverse proxy.
 - Use the relay protocol as the client boundary. Do not import a client application.
 - Preserve parity for Claude, Codex, Antigravity, OpenCode, Kimi, Grok and Cursor.
 - Keep credentials in environment variables or the local mode-`0600` configuration file.
-- Keep the exported runtime deployment-neutral. Domains, filesystem layouts,
-  operator service names and private infrastructure belong in external deployment
-  configuration; package defaults and examples must work without CodeAgentSwarm's own hosts.
+- Keep the exported runtime free of operator-specific domains, filesystem layouts,
+  service names, secrets and deployment files. The current product uses the hosted
+  CodeAgentSwarm control plane and relay; independent self-hosting is not supported.
 - CAS Cloud is moving toward an open-source distribution model. Do not describe the
   current PolyForm license as open source, but avoid coupling that would block a
   deliberate license transition later.

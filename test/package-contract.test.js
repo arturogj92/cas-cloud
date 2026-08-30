@@ -10,8 +10,16 @@ test('declares the noncommercial source license explicitly', () => {
   assert.strictEqual(manifest.license, 'PolyForm-Noncommercial-1.0.0');
   assert.match(
     fs.readFileSync(path.join(packageRoot, 'NOTICE'), 'utf8').trim(),
-    /^Required Notice: Copyright 2026 Arturo Garcia\. Commercial licensing: hello@codeagentswarm\.com\.$/,
+    /^Required Notice: Copyright 2026 Arturo Garcia\. Commercial licensing: hello@codeagentswarm\.com\.\nRequired Notice: No trademark license is granted for the CAS Cloud or CodeAgentSwarm names or logos\. Truthful references to the original project are not prohibited\.$/,
   );
+});
+
+test('publishes under the CodeAgentSwarm scope with a direct npx executable', () => {
+  assert.strictEqual(manifest.name, '@codeagentswarm/cas-cloud');
+  assert.strictEqual(manifest.author, 'Arturo Garcia <hello@codeagentswarm.com>');
+  assert.deepStrictEqual(manifest.publishConfig, { access: 'public' });
+  assert.strictEqual(manifest.bin['cas-cloud'], 'dist/cas.js');
+  assert.strictEqual(manifest.repository.url, 'git+https://github.com/arturogj92/cas-cloud.git');
 });
 
 test('ships the Linux user-service and local smoke check', () => {
@@ -40,4 +48,5 @@ test('ships the Linux user-service and local smoke check', () => {
   assert.match(fs.readFileSync(path.join(packageRoot, 'systemd', 'cas-preview.service.example'), 'utf8'), /KillMode=control-group/);
   assert.match(fs.readFileSync(path.join(packageRoot, 'caddy', 'Caddyfile.preview.example'), 'utf8'), /127\.0\.0\.1:41820/);
   assert.match(fs.readFileSync(path.join(packageRoot, 'scripts', 'cas-cli-smoke.sh'), 'utf8'), /:memory:/);
+  assert.match(fs.readFileSync(path.join(packageRoot, 'scripts', 'cas-cli-smoke.sh'), 'utf8'), /@codeagentswarm\/cas-cloud/);
 });

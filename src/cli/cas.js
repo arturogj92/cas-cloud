@@ -27,7 +27,7 @@ function help() {
   return `CAS CLI ${version}
 
 Usage:
-  npx codeagentswarm cloud [--project PATH ...] [--projects-root PATH ...]
+  npx @codeagentswarm/cas-cloud serve [--project PATH ...] [--projects-root PATH ...]
   cas-cli serve [--project PATH ...] [--projects-root PATH ...] [--channel production|development]
   cas-cli setup
   cas-cli doctor

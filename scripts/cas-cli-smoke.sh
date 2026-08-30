@@ -14,7 +14,7 @@ command -v "$cas_cli_bin" >/dev/null
 "$cas_cli_bin" doctor
 
 if [ -z "$package_dir" ]; then
-  package_dir="$(npm root -g)/codeagentswarm"
+  package_dir="$(npm root -g)/@codeagentswarm/cas-cloud"
 fi
 
 CAS_CLI_PACKAGE_DIR="$package_dir" node <<'NODE'
