@@ -22,6 +22,33 @@ function normalizeConversationMessages(messages) {
   });
 }
 
+function boundedConversationMessages(messages, { limit = 30, maxMessageChars = 8000, maxBytes = 220000 } = {}) {
+  const normalized = normalizeConversationMessages(messages);
+  const requested = normalized.slice(-limit);
+  const result = [];
+  let bytes = 0;
+  let truncated = normalized.length > requested.length;
+  for (let index = requested.length - 1; index >= 0; index -= 1) {
+    const message = requested[index];
+    const original = String(message.text || '').trim();
+    const content = original.slice(0, maxMessageChars);
+    const messageBytes = Buffer.byteLength(content, 'utf8');
+    if (!content) continue;
+    if (bytes + messageBytes > maxBytes) {
+      truncated = true;
+      break;
+    }
+    if (content.length < original.length) truncated = true;
+    bytes += messageBytes;
+    result.unshift({
+      role: message.role === 'assistant_message' ? 'assistant' : 'user',
+      content,
+      ...(message.timestamp !== undefined ? { timestamp: message.timestamp } : {}),
+    });
+  }
+  return { messages: result, truncated };
+}
+
 function findConversationAnchor(messages, anchor) {
   const role = anchor?.role === 'assistant_message' || anchor?.role === 'assistant'
     ? 'assistant_message'
@@ -98,6 +125,7 @@ module.exports = {
   DEFAULT_HISTORY_PAGE_SIZE,
   conversationTimestampMs,
   normalizeConversationMessages,
+  boundedConversationMessages,
   findConversationAnchor,
   pageConversationMessages,
   conversationMessagesToEvents

@@ -1,0 +1,13 @@
+[Unit]
+Description=Update CAS Cloud when its sessions are idle
+Wants=network-online.target
+After=network-online.target cas-cli.service
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CAS_CLI_INSTALL_ROOT=%h/.local/share/codeagentswarm-cloud
+Environment=CAS_CLI_SYSTEMD_SCOPE=user
+EnvironmentFile=-%h/.config/codeagentswarm/cas-cli-update.env
+ExecStart=%h/.local/share/codeagentswarm-cloud/current/node_modules/.bin/cas-cli update
+TimeoutStartSec=infinity

@@ -324,6 +324,8 @@ class MobileRuntime {
     getClientMetadata = () => ({}),
     getHistory = async () => [],
     getConversationContent = null,
+    listCoordinatedSessions = null,
+    readCoordinatedTranscript = null,
     listTasks = null,
     createTask = null,
     updateTask = null,
@@ -361,7 +363,9 @@ class MobileRuntime {
     closeSession = null,
     minimizeSession = null,
     restoreSession = null,
-    notifyAttention = null
+    notifyAttention = null,
+    sendTurn = null,
+    onSessionsChanged = null
   } = {}) {
     if (!manager) throw new Error('MobileRuntime requires a DriverChatManager');
     this.manager = manager;
@@ -381,6 +385,8 @@ class MobileRuntime {
     this.getClientMetadata = getClientMetadata;
     this.getHistory = getHistory;
     this.getConversationContent = getConversationContent;
+    this.listCoordinatedSessions = listCoordinatedSessions;
+    this.readCoordinatedTranscript = readCoordinatedTranscript;
     this.listTasks = listTasks;
     this.createTask = createTask;
     this.updateTask = updateTask;
@@ -419,6 +425,8 @@ class MobileRuntime {
     this.minimizeSession = minimizeSession;
     this.restoreSession = restoreSession;
     this.notifyAttention = notifyAttention;
+    this.sendTurn = sendTurn || ((sessionId, input) => this.manager.sendTurn(sessionId, input));
+    this.onSessionsChanged = onSessionsChanged;
     this.sequence = 0;
     this.events = [];
     this.providerEventIds = new Set();
@@ -435,7 +443,9 @@ class MobileRuntime {
     this.quotaFreshnessTimer = null;
     this.started = false;
     this._onSessionStarting = (session) => this._registerStartingSession(session);
-    this._onSessionStarted = (session) => this._registerSession(session);
+    this._onSessionStarted = (session) => {
+      if (session?.ephemeral !== true) this._registerSession(session);
+    };
     this._onSessionEvent = ({ sessionId, event }) => this._publishProviderEvent(sessionId, event);
   }
 
@@ -466,6 +476,15 @@ class MobileRuntime {
       try { fs.rmSync(this.mobileFileDirectory, { recursive: true, force: true }); } catch (_) {}
     }
     this.mobileFileDirectory = null;
+  }
+
+  _sessionsChanged() {
+    if (typeof this.onSessionsChanged !== 'function') return;
+    try {
+      this.onSessionsChanged(this.sessions);
+    } catch (error) {
+      console.error(`Could not persist CAS Cloud sessions: ${error.message}`);
+    }
   }
 
   attachSocket(socket) {
@@ -720,6 +739,7 @@ class MobileRuntime {
       sessionId: session.sessionId,
       identity: patch
     }).seq;
+    this._sessionsChanged();
     return true;
   }
 
@@ -855,6 +875,7 @@ class MobileRuntime {
       serviceTier: started.serviceTier,
       permissionMode: started.permissionMode,
       interactionMode: started.interactionMode,
+      supportsResume: started.supportsResume !== false,
       needsAttention: false,
       attentionVersion: 0,
       minimized: false,
@@ -878,6 +899,7 @@ class MobileRuntime {
         serviceTier: started.serviceTier,
         permissionMode: started.permissionMode,
         interactionMode: started.interactionMode,
+        supportsResume: started.supportsResume !== false,
         needsAttention: false,
         attentionVersion: 0,
         minimized: false,
@@ -889,6 +911,7 @@ class MobileRuntime {
     for (const event of started.historyEvents || []) {
       this._publishProviderEvent(started.sessionId, event);
     }
+    this._sessionsChanged();
   }
 
   async _hydrateHistoryTranscript(sessionId, entry) {
@@ -1048,6 +1071,9 @@ class MobileRuntime {
     if (compact.type === 'turn.completed' || compact.type === 'session.exited') {
       this.remoteTurnSessions.delete(sessionId);
     }
+    if (['session.state.changed', 'session.config.updated', 'session.exited', 'thread.started', 'turn.started', 'turn.completed'].includes(compact.type)) {
+      this._sessionsChanged();
+    }
   }
 
   _compactProviderEvent(sessionId, event) {
@@ -1199,6 +1225,7 @@ class MobileRuntime {
         serviceTier: null,
         permissionMode: null,
         interactionMode: null,
+        supportsResume: true,
         title: null,
         goal: null,
         activity: null,
@@ -1444,6 +1471,22 @@ class MobileRuntime {
       if (unexpected) throw new Error(`Unexpected project field: ${unexpected}`);
     };
     const mutationRequestId = () => payload.requestId || context.commandId;
+    if (command.type === 'coordination.sessions') {
+      if (typeof this.listCoordinatedSessions !== 'function') throw new Error('Session discovery is unavailable');
+      exactPayload([]);
+      return this.listCoordinatedSessions();
+    }
+    if (command.type === 'coordination.transcript') {
+      if (typeof this.readCoordinatedTranscript !== 'function') throw new Error('Conversation reading is unavailable');
+      exactPayload(['targetSessionId', 'limit']);
+      const targetSessionId = cleanText(payload.targetSessionId, 128);
+      const limit = payload.limit === undefined ? 30 : Number(payload.limit);
+      if (!targetSessionId) throw new Error('Choose a session to read');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 60) {
+        throw new Error('Conversation limit must be between 1 and 60');
+      }
+      return this.readCoordinatedTranscript({ targetSessionId, limit });
+    }
     if (command.type === 'projects.list') {
       if (typeof this.listProjects !== 'function') throw new Error('Remote projects are unavailable');
       exactPayload(['cursor', 'limit']);
@@ -1968,8 +2011,9 @@ class MobileRuntime {
           try { this.onRemoteTurn(sessionId, { text, attachments }); } catch (_) {}
         }
         this.remoteTurnSessions.add(sessionId);
+        this._sessionsChanged();
         try {
-          const delivered = await this.manager.sendTurn(sessionId, { text, attachments });
+          const delivered = await this.sendTurn(sessionId, { text, attachments });
           for (const uploadId of uploadIds) this.attachmentUploads.delete(uploadId);
           return { accepted: true, ...(delivered?.turnId ? { turnId: delivered.turnId } : {}) };
         } catch (error) {
@@ -1991,6 +2035,7 @@ class MobileRuntime {
             }
           });
           this.remoteTurnSessions.delete(sessionId);
+          this._sessionsChanged();
           throw error;
         } finally {
           this._removeMobileFiles(attachments);
@@ -2017,6 +2062,7 @@ class MobileRuntime {
         if (result?.stopped) {
           session.state = 'stopped';
           session.lastSeq = this._publish('session.closed', { sessionId, reason: 'remote' }).seq;
+          this._sessionsChanged();
         }
         return result;
       }

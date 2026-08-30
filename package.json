@@ -1,20 +1,27 @@
 {
   "name": "codeagentswarm",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "CAS Cloud runtime for remote CodeAgentSwarm sessions",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "commonjs",
   "bin": {
     "cas-cli": "dist/cas.js",
-    "cas": "dist/cas.js"
+    "cas": "dist/cas.js",
+    "cas-preview": "dist/cas-preview.js"
   },
   "files": [
     "dist/*.js",
+    "dist/templates/*.md",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "THIRD_PARTY_NOTICES.md",
     "scripts/cas-cli-smoke.sh",
-    "systemd/cas-cli.service.example"
+    "systemd/cas-cli.service.example",
+    "systemd/cas-cli-update.service.example",
+    "systemd/cas-cli-update.timer.example",
+    "systemd/cas-preview.service.example",
+    "caddy/Caddyfile.preview.example"
   ],
   "engines": {
     "node": ">=20"

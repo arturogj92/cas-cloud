@@ -18,11 +18,46 @@ async function setupHeadlessMcp({
     fs.copyFileSync(source, target);
     fs.chmodSync(target, 0o755);
   }
-  const result = await registry.enableMcpForAll();
-  const failures = Object.entries(result.results || {})
+  const mcp = await registry.enableMcpForAll();
+  const mcpFailures = Object.entries(mcp.results || {})
     .filter(([, value]) => value?.success === false)
-    .map(([agent, value]) => ({ agent, message: value.message || 'MCP setup failed' }));
-  return { runtimeDir, agents: registry.getAllIds(), failures };
+    .map(([agent, value]) => ({ agent, surface: 'mcp', message: value.message || 'MCP setup failed' }));
+
+  const instructionResults = {};
+  for (const agent of registry.getAllIds()) {
+    if (mcp.results?.[agent]?.success === false) {
+      instructionResults[agent] = {
+        success: true,
+        skipped: true,
+        message: 'Title instructions skipped because the MCP entry is user-owned',
+      };
+      continue;
+    }
+    try {
+      instructionResults[agent] = await registry.enableInstructionsFor(
+        agent,
+        'titles-only',
+        { includeStatus: true },
+      );
+    } catch (error) {
+      instructionResults[agent] = { success: false, message: error.message };
+    }
+  }
+  const instructionFailures = Object.entries(instructionResults)
+    .filter(([, value]) => value?.success === false)
+    .map(([agent, value]) => ({
+      agent,
+      surface: 'instructions',
+      message: value.message || 'Title instruction setup failed',
+    }));
+  const failures = [...mcpFailures, ...instructionFailures];
+  return {
+    runtimeDir,
+    agents: registry.getAllIds(),
+    failures,
+    mcpFailures,
+    instructionFailures,
+  };
 }
 
 module.exports = { setupHeadlessMcp };

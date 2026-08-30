@@ -384,6 +384,7 @@ class DriverChatManager extends EventEmitter {
       const started = {
         sessionId,
         ...(clientRequestId ? { clientRequestId } : {}),
+        ...(ephemeral === true ? { ephemeral: true } : {}),
         agent,
         accountId: env.CODEAGENTSWARM_PROVIDER_ACCOUNT_ID || 'current',
         accountLabel: env.CODEAGENTSWARM_PROVIDER_ACCOUNT_LABEL || '',

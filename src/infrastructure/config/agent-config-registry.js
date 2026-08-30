@@ -321,6 +321,23 @@ class AgentConfigRegistry {
     }
 
     /**
+     * Add an instruction section for one agent without replacing an existing
+     * CAS-owned variant. Headless setup uses this so a titles-only bootstrap
+     * never downgrades Desktop's full task-management instructions.
+     * @param {string} agentId
+     * @param {string} [variant='full']
+     * @param {object} [options={}]
+     * @returns {Promise<{success: boolean, message?: string}>}
+     */
+    async enableInstructionsFor(agentId, variant = 'full', options = {}) {
+        const agent = this.get(agentId);
+        if (!agent) {
+            return { success: false, message: `Unknown agent: ${agentId}` };
+        }
+        return agent.addInstructionSection(variant, options);
+    }
+
+    /**
      * Add the MCP server entry for a single agent (does NOT touch its instruction file).
      * @param {string} agentId
      * @returns {Promise<{success: boolean, message?: string}>}

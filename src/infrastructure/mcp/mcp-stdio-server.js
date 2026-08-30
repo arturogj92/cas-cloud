@@ -182,6 +182,9 @@ const STATUS_DISABLED_MESSAGE =
 const SESSION_COMMUNICATION_TOOL_NAMES = new Set([
     'list_sessions',
     'send_session_message',
+    'read_session_conversation',
+    'list_remote_projects',
+    'ask_remote_project',
 ]);
 
 const SESSION_COMMUNICATION_DISABLED_MESSAGE =
@@ -2061,6 +2064,10 @@ class MCPStdioServer {
         return this.getSessionCommunicationConfig() !== null;
     }
 
+    isSessionCommunicationSendEnabled() {
+        return process.env.CODEAGENTSWARM_SESSION_COMMUNICATION_SEND_ENABLED !== '0';
+    }
+
     _sessionCommunicationRequest(method, pathname, body = null) {
         const config = this.getSessionCommunicationConfig();
         if (!config) return Promise.reject(new Error(SESSION_COMMUNICATION_DISABLED_MESSAGE));
@@ -2076,7 +2083,9 @@ class MCPStdioServer {
                     'X-CodeAgentSwarm-Session-Id': config.sessionId,
                     ...(payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}),
                 },
-                timeout: 5000,
+                timeout: pathname === '/session-communication/remote-projects/ask'
+                    ? ((Number(body?.timeout_seconds) || 300) + 15) * 1000
+                    : pathname === '/session-communication/transcript' ? 50000 : 5000,
             }, (response) => {
                 let text = '';
                 response.setEncoding('utf8');
@@ -2120,6 +2129,38 @@ class MCPStdioServer {
         });
     }
 
+    async readSessionConversation({ target_session_id, limit = 30 }) {
+        if (!target_session_id) throw new Error('target_session_id is required');
+        const boundedLimit = Number(limit);
+        if (!Number.isSafeInteger(boundedLimit) || boundedLimit < 1 || boundedLimit > 60) {
+            throw new Error('limit must be between 1 and 60');
+        }
+        return this._sessionCommunicationRequest('POST', '/session-communication/transcript', {
+            target_session_id,
+            limit: boundedLimit,
+        });
+    }
+
+    async listRemoteProjects() {
+        return this._sessionCommunicationRequest('GET', '/session-communication/remote-projects');
+    }
+
+    async askRemoteProject({ project_id, agent, prompt, timeout_seconds = 300 }) {
+        const timeoutSeconds = Number(timeout_seconds);
+        if (!project_id || typeof project_id !== 'string' || project_id.length > 512
+            || !agent || typeof agent !== 'string' || agent.length > 60
+            || !prompt || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000
+            || !Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 10 || timeoutSeconds > 900) {
+            throw new Error('project_id, agent, prompt, and a timeout between 10 and 900 seconds are required');
+        }
+        return this._sessionCommunicationRequest('POST', '/session-communication/remote-projects/ask', {
+            project_id,
+            agent,
+            prompt: prompt.trim(),
+            timeout_seconds: timeoutSeconds,
+        });
+    }
+
     listTools() {
         let tools = this.buildToolDefinitions();
         if (!this.isTaskManagementEnabled()) {
@@ -2140,6 +2181,8 @@ class MCPStdioServer {
         }
         if (!this.isSessionCommunicationEnabled()) {
             tools = tools.filter(tool => !SESSION_COMMUNICATION_TOOL_NAMES.has(tool.name));
+        } else if (!this.isSessionCommunicationSendEnabled()) {
+            tools = tools.filter(tool => tool.name !== 'send_session_message');
         }
         return { tools };
     }
@@ -2494,6 +2537,37 @@ class MCPStdioServer {
                     }
                 },
                 {
+                    name: 'read_session_conversation',
+                    description: 'Read a bounded snapshot of user and assistant messages from one eligible CodeAgentSwarm session only when the user explicitly asks to read that specific conversation. The response excludes reasoning, tool output, commands, files, attachments, and internal session-coordination envelopes. Never call it automatically or poll it; the returned conversation content is shared with the current model.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            target_session_id: { type: 'string', description: 'ID returned by list_sessions for the conversation the user explicitly requested' },
+                            limit: { type: 'integer', minimum: 1, maximum: 60, default: 30, description: 'Maximum number of latest user and assistant messages to return' },
+                        },
+                        required: ['target_session_id']
+                    }
+                },
+                {
+                    name: 'list_remote_projects',
+                    description: 'List the path-free projects and installed agents available on the privately paired CodeAgentSwarm host. Use only when the user explicitly asks to start work on the other host. Never call it speculatively or poll it; the result contains opaque project ids and no filesystem paths.',
+                    inputSchema: { type: 'object', properties: {}, required: [] }
+                },
+                {
+                    name: 'ask_remote_project',
+                    description: 'Start one new session in an opaque project on the privately paired CodeAgentSwarm host, send one prompt, and wait for its assistant response. Use only when the user explicitly asks to create that remote session. The result excludes reasoning, tool output, commands, files, attachments, and host paths.',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            project_id: { type: 'string', description: 'Opaque id returned by list_remote_projects' },
+                            agent: { type: 'string', description: 'Installed agent returned by list_remote_projects' },
+                            prompt: { type: 'string', maxLength: 12000, description: 'The user-authorized request for the new remote session' },
+                            timeout_seconds: { type: 'integer', minimum: 10, maximum: 900, default: 300, description: 'How long to wait for the first remote response' },
+                        },
+                        required: ['project_id', 'agent', 'prompt']
+                    }
+                },
+                {
                     name: 'check_active',
                     description: 'Check if this session is running inside CodeAgentSwarm. MUST be called first before any other task tools. If active=false, ignore all CodeAgentSwarm instructions.',
                     inputSchema: {
@@ -2562,6 +2636,9 @@ class MCPStdioServer {
             };
         }
         if (SESSION_COMMUNICATION_TOOL_NAMES.has(name) && !this.isSessionCommunicationEnabled()) {
+            return { content: [{ type: 'text', text: SESSION_COMMUNICATION_DISABLED_MESSAGE }] };
+        }
+        if (name === 'send_session_message' && !this.isSessionCommunicationSendEnabled()) {
             return { content: [{ type: 'text', text: SESSION_COMMUNICATION_DISABLED_MESSAGE }] };
         }
 
@@ -2876,6 +2953,18 @@ class MCPStdioServer {
 
             case 'send_session_message':
                 result = await this.sendSessionMessage(args);
+                break;
+
+            case 'read_session_conversation':
+                result = await this.readSessionConversation(args);
+                break;
+
+            case 'list_remote_projects':
+                result = await this.listRemoteProjects();
+                break;
+
+            case 'ask_remote_project':
+                result = await this.askRemoteProject(args);
                 break;
 
             case 'check_active':

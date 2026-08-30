@@ -6,8 +6,10 @@ const { parseArgs } = require('util');
 const qrcode = require('qrcode');
 const { AGENT_BINARIES, AGENT_IDS, HeadlessProviderService } = require('../infrastructure/headless/headless-provider-service');
 const { setupHeadlessMcp } = require('../infrastructure/headless/headless-mcp-setup');
+const { updateInstallation } = require('../infrastructure/headless/headless-updater');
 const { pairingPayload } = require('../infrastructure/mobile/mobile-pairing-ipc');
 const { mobileWebOrigin } = require('../infrastructure/mobile/mobile-build-channel');
+const { requestHeadlessBridge } = require('../infrastructure/headless/headless-session-bridge');
 const {
   DEFAULT_BACKEND_URL,
   appDataPath,
@@ -19,6 +21,7 @@ const {
 const version = typeof CAS_CLI_BUNDLED_VERSION === 'string'
   ? CAS_CLI_BUNDLED_VERSION
   : JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).version;
+const DEFAULT_PAIRING_CODE_ORIGIN = 'https://codeagentswarm-connect.elcaminodelprogramadorweb.workers.dev';
 
 function help() {
   return `CAS CLI ${version}
@@ -28,6 +31,10 @@ Usage:
   cas-cli serve [--project PATH ...] [--projects-root PATH ...] [--channel production|development]
   cas-cli setup
   cas-cli doctor
+  cas-cli update
+  cas-cli link PAIRING_CODE
+  cas-cli remote-status
+  cas-cli unlink
   cas-cli --version
 
 setup installs every supported agent CLI and its CodeAgentSwarm MCP. serve checks that setup automatically,
@@ -52,13 +59,74 @@ function parseCliArgs(argv) {
   });
   const requestedCommand = parsed.positionals.shift() || 'serve';
   const command = requestedCommand === 'cloud' ? 'serve' : requestedCommand;
+  if (!['serve', 'setup', 'doctor', 'update', 'help', 'link', 'remote-status', 'unlink'].includes(command)) {
+    throw new Error(`Unknown command: ${command}`);
+  }
+  const pairingInput = command === 'link' ? parsed.positionals.shift() : null;
+  if (command === 'link' && !pairingInput) throw new Error('A pairing code is required');
   if (parsed.positionals.length) throw new Error(`Unexpected argument: ${parsed.positionals[0]}`);
-  if (!['serve', 'setup', 'doctor', 'help'].includes(command)) throw new Error(`Unknown command: ${command}`);
   if (!['production', 'development'].includes(parsed.values.channel)) {
     throw new Error('Channel must be production or development');
   }
   const { ['projects-root']: projectsRoot, ...values } = parsed.values;
-  return { command, ...values, projectsRoot };
+  return { command, ...values, projectsRoot, ...(pairingInput ? { pairingInput } : {}) };
+}
+
+async function resolvePairingInput(raw, fetchImpl = globalThis.fetch) {
+  const compact = String(raw || '').trim().toUpperCase().replace(/[\s-]/g, '');
+  if (!/^[A-HJ-NP-Z2-9]{8}$/.test(compact)) throw new Error('This pairing code is not valid');
+  const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
+  const origin = new URL(process.env.CAS_PAIRING_CODE_ORIGIN || DEFAULT_PAIRING_CODE_ORIGIN);
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
+  if ((origin.protocol !== 'https:' && !(origin.protocol === 'http:' && local)) || origin.username || origin.password) {
+    throw new Error('The pairing service is not secure');
+  }
+  try {
+    const response = await fetchImpl(`${origin.origin}/api/mobile/pairing-code/${encodeURIComponent(code)}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error();
+    const body = await response.json();
+    if (typeof body.pairingUri !== 'string') throw new Error();
+    return body.pairingUri;
+  } catch (_) {
+    throw new Error('This pairing code is invalid or has expired');
+  }
+}
+
+async function linkRemoteRuntime(pairingInput, { output = console.log, request = requestHeadlessBridge } = {}) {
+  const pairing = await resolvePairingInput(pairingInput);
+  await request(appDataPath(), 'POST', '/admin/remote-runtime/pair', { pairing });
+  const deadline = Date.now() + 120000;
+  let shownChallenge = null;
+  while (Date.now() < deadline) {
+    const state = await request(appDataPath(), 'GET', '/admin/remote-runtime');
+    if (state.phase === 'online') {
+      output(`Connected to ${state.runtime?.name || 'the Mac'} ✓`);
+      return state;
+    }
+    if (state.phase === 'confirming' && state.challenge?.code && state.challenge.code !== shownChallenge) {
+      shownChallenge = state.challenge.code;
+      output(`Verification code: ${shownChallenge}. Confirm it on the Mac.`);
+    }
+    if (state.error && !['connecting', 'confirming', 'syncing'].includes(state.phase)) throw new Error(state.error);
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+  throw new Error('Pairing timed out before it was confirmed on the Mac');
+}
+
+async function printRemoteStatus({ output = console.log, request = requestHeadlessBridge } = {}) {
+  const state = await request(appDataPath(), 'GET', '/admin/remote-runtime');
+  output(state.phase === 'online'
+    ? `Mac link: online · ${state.runtime?.name || state.runtime?.id}`
+    : `Mac link: ${state.phase}${state.error ? ` · ${state.error}` : ''}`);
+  return state;
+}
+
+async function unlinkRemoteRuntime({ output = console.log, request = requestHeadlessBridge } = {}) {
+  await request(appDataPath(), 'DELETE', '/admin/remote-runtime');
+  output('Mac link removed ✓');
 }
 
 async function doctor() {
@@ -116,65 +184,105 @@ async function setupCloud(options = {}) {
     launcherSource: mcpAsset('antigravity-mcp-launcher.js'),
   });
   const output = options.output || console.log;
-  if (mcp.failures.length) {
-    output(`CodeAgentSwarm MCP conflicts left unchanged: ${mcp.failures.map(({ agent }) => agent).join(', ')}`);
+  const mcpFailures = mcp.mcpFailures || mcp.failures || [];
+  const instructionFailures = mcp.instructionFailures || [];
+  if (mcpFailures.length) {
+    output(`CodeAgentSwarm MCP conflicts left unchanged: ${mcpFailures.map(({ agent }) => agent).join(', ')}`);
   } else {
     output('CodeAgentSwarm MCP: configured for every agent ✓');
+  }
+  if (instructionFailures.length) {
+    output(`CodeAgentSwarm title instructions failed: ${instructionFailures.map(({ agent }) => agent).join(', ')}`);
+  } else {
+    output('CodeAgentSwarm title instructions: configured for every MCP-enabled agent ✓');
   }
   return { ...providers, mcp };
 }
 
 async function serve({ project: projectPaths = [], projectsRoot: projectRoots = [], channel }) {
-  await setupCloud();
-  const projects = projectPaths.map((projectPath) => resolveProject(projectPath));
-  const roots = projectRoots.map((rootPath) => resolveProject(rootPath).path);
-  const backendUrl = process.env.CAS_BACKEND_URL || DEFAULT_BACKEND_URL;
-  const host = createHeadlessHost({
-    projectPaths: projects.map((project) => project.path),
-    projectRoots: roots,
-    getToken: await createAccessTokenProvider({ backendUrl }),
-    identity: loadIdentity(),
-    backendUrl,
-    channel,
-    version,
-  });
-
-  host.relay.on('status', ({ status }) => console.log(`Relay: ${status}`));
-  host.relay.on('diagnostic', ({ event }) => console.log(`Relay diagnostic: ${event}`));
-  host.relay.on('event', (event) => {
-    void (async () => {
-      if (event.kind === 'pair.scanned') {
-        const code = String(event.verificationCode || '').padStart(6, '0');
-        console.log(`Approving ${event.device?.name || 'mobile device'} with verification code ${code}.`);
-        await host.relay.confirmPairing(event.pairingId, true);
-      } else if (event.kind === 'pair.completed') {
-        console.log(`${event.device?.name || 'Mobile device'} connected.`);
-      } else if (event.kind === 'mobile.connected') {
-        console.log(`${event.device?.name || 'Mobile device'} online.`);
-      } else if (event.kind === 'mobile.disconnected') {
-        console.log('Mobile device disconnected; the relay will keep listening.');
-      }
-    })().catch((error) => console.error(`Pairing failed: ${error.message}`));
-  });
-
-  await host.start();
-  const pairing = await host.relay.createPairing();
-  const link = pairingPayload(pairing, mobileWebOrigin(channel));
-  console.log(`\nCAS Cloud is serving ${host.projects.length} registered project${host.projects.length === 1 ? '' : 's'}`);
-  console.log(`Runtime: ${host.identity.runtimeId}`);
-  console.log(`Pairing expires: ${new Date(pairing.expiresAt).toLocaleString()}`);
-  console.log(await qrcode.toString(link, { type: 'terminal', small: true, errorCorrectionLevel: 'L' }));
-  console.log(`Pairing code: ${pairing.pairingCode}`);
-  console.log(link);
-  console.log('\nPress Ctrl+C to stop.');
-
-  const stop = async () => {
-    process.removeListener('SIGINT', stop);
-    process.removeListener('SIGTERM', stop);
-    await host.stop();
+  let printPairing;
+  let pairingRefresh = Promise.resolve();
+  let refreshPending = false;
+  const refreshPairing = () => {
+    if (!printPairing) {
+      refreshPending = true;
+      return;
+    }
+    pairingRefresh = pairingRefresh
+      .then(() => printPairing())
+      .catch((error) => console.error(`Pairing refresh failed: ${error.message}`));
   };
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  process.on('SIGUSR1', refreshPairing);
+
+  try {
+    await setupCloud();
+    const projects = projectPaths.map((projectPath) => resolveProject(projectPath));
+    const roots = projectRoots.map((rootPath) => resolveProject(rootPath).path);
+    const backendUrl = process.env.CAS_BACKEND_URL || DEFAULT_BACKEND_URL;
+    const host = createHeadlessHost({
+      projectPaths: projects.map((project) => project.path),
+      projectRoots: roots,
+      getToken: await createAccessTokenProvider({ backendUrl }),
+      identity: loadIdentity(),
+      backendUrl,
+      channel,
+      version,
+    });
+
+    host.relay.on('status', ({ status }) => console.log(`Relay: ${status}`));
+    host.relay.on('diagnostic', ({ event }) => console.log(`Relay diagnostic: ${event}`));
+    host.relay.on('event', (event) => {
+      void (async () => {
+        if (event.kind === 'pair.scanned') {
+          const code = String(event.verificationCode || '').padStart(6, '0');
+          console.log(`Approving ${event.device?.name || 'mobile device'} with verification code ${code}.`);
+          await host.relay.confirmPairing(event.pairingId, true);
+        } else if (event.kind === 'pair.completed') {
+          console.log(`${event.device?.name || 'Mobile device'} connected.`);
+        } else if (event.kind === 'mobile.connected') {
+          console.log(`${event.device?.name || 'Mobile device'} online.`);
+        } else if (event.kind === 'mobile.disconnected') {
+          console.log('Mobile device disconnected; the relay will keep listening.');
+        }
+      })().catch((error) => console.error(`Pairing failed: ${error.message}`));
+    });
+
+    await host.start();
+    console.log(`\nCAS Cloud is serving ${host.projects.length} registered project${host.projects.length === 1 ? '' : 's'}`);
+    console.log(`Runtime: ${host.identity.runtimeId}`);
+    printPairing = async ({ includeQr = false } = {}) => {
+      const pairing = await host.relay.createPairing();
+      console.log(`Pairing expires: ${new Date(pairing.expiresAt).toLocaleString()}`);
+      if (includeQr) {
+        const link = pairingPayload(pairing, mobileWebOrigin(channel));
+        console.log(await qrcode.toString(link, { type: 'terminal', small: true, errorCorrectionLevel: 'L' }));
+        console.log(`Pairing code: ${pairing.pairingCode}`);
+        console.log(link);
+        return;
+      }
+      console.log(`Pairing code: ${pairing.pairingCode}`);
+    };
+    pairingRefresh = printPairing({ includeQr: true });
+    await pairingRefresh;
+    if (refreshPending) {
+      refreshPending = false;
+      refreshPairing();
+    }
+    console.log('\nPress Ctrl+C to stop. Send SIGUSR1 to print a fresh pairing code without restarting.');
+
+    const stop = async () => {
+      process.removeListener('SIGINT', stop);
+      process.removeListener('SIGTERM', stop);
+      process.removeListener('SIGUSR1', refreshPairing);
+      await pairingRefresh;
+      await host.stop();
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  } catch (error) {
+    process.removeListener('SIGUSR1', refreshPairing);
+    throw error;
+  }
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -183,6 +291,10 @@ async function main(argv = process.argv.slice(2)) {
   if (options.help || options.command === 'help') return console.log(help());
   if (options.command === 'doctor') return doctor();
   if (options.command === 'setup') return setupCloud();
+  if (options.command === 'update') return updateInstallation();
+  if (options.command === 'link') return linkRemoteRuntime(options.pairingInput);
+  if (options.command === 'remote-status') return printRemoteStatus();
+  if (options.command === 'unlink') return unlinkRemoteRuntime();
   await serve(options);
 }
 
@@ -193,4 +305,18 @@ if (require.main === module) {
   });
 }
 
-module.exports = { AGENT_BINARIES, doctor, help, main, parseCliArgs, serve, setupCloud, setupProviders };
+module.exports = {
+  AGENT_BINARIES,
+  doctor,
+  help,
+  linkRemoteRuntime,
+  main,
+  parseCliArgs,
+  printRemoteStatus,
+  resolvePairingInput,
+  serve,
+  setupCloud,
+  setupProviders,
+  unlinkRemoteRuntime,
+  updateInstallation,
+};

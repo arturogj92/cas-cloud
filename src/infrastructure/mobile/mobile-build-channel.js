@@ -1,7 +1,7 @@
 const DEVELOPMENT_CHANNEL = 'development';
 const PRODUCTION_CHANNEL = 'production';
 const DEVELOPMENT_MOBILE_WEB_ORIGIN = 'https://develop.codeagentswarm-mobile.pages.dev';
-const PRODUCTION_MOBILE_WEB_ORIGIN = 'https://codeagentswarm-mobile.pages.dev';
+const PRODUCTION_MOBILE_WEB_ORIGIN = 'https://web.codeagentswarm.com';
 
 function resolveMobileBuildChannel(channel) {
   return channel === PRODUCTION_CHANNEL ? PRODUCTION_CHANNEL : DEVELOPMENT_CHANNEL;

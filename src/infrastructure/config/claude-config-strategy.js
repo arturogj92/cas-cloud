@@ -101,7 +101,7 @@ class ClaudeConfigStrategy extends AgentConfigStrategy {
             // no-create override block is spliced by the shared base helper, so
             // Claude and the static-template agents carry identical wording.
             const section = getGlobalCodeAgentSwarmSection(genOptions);
-            const withStatusPolicy = variant === 'full' && contentVariant === 'titles-only' && includeStatus
+            const withStatusPolicy = contentVariant === 'titles-only' && includeStatus
                 ? this._addTerminalStatusPolicy(section)
                 : section;
             const withPlanPolicy = this._addPlanAccuracyPolicy(withStatusPolicy);

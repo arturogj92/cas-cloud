@@ -1,0 +1,12 @@
+preview.example.com {
+	header {
+		Cache-Control "no-store"
+		X-Robots-Tag "noindex, nofollow, noarchive"
+		X-Content-Type-Options "nosniff"
+	}
+	reverse_proxy 127.0.0.1:41820 {
+		header_down -Cache-Control
+		header_down -X-Robots-Tag
+		header_down -X-Content-Type-Options
+	}
+}

@@ -2,13 +2,24 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { DriverChatManager } = require('../agent-drivers/driver-chat-manager');
+const { DriverChatManager, SESSION_EVENT } = require('../agent-drivers/driver-chat-manager');
+const { boundedConversationMessages } = require('../agent-drivers/chat-history-pagination');
 const { MobileRuntime } = require('../mobile/mobile-runtime');
 const { MobileRelayClient } = require('../mobile/mobile-relay-client');
 const { createKeyPair } = require('../mobile/mobile-crypto');
+const { RemoteRuntimeClient } = require('../mobile/remote-runtime-client');
+const { RemoteRuntimeStore } = require('../mobile/remote-runtime-store');
+const { HeadlessSessionBridge } = require('./headless-session-bridge');
+const { createHeadlessChatPreferences } = require('./headless-chat-preferences');
 const { HeadlessProjectRegistry } = require('./headless-project-registry');
 const { AGENT_IDS, HeadlessProviderService } = require('./headless-provider-service');
 const { HeadlessTaskService } = require('./headless-task-service');
+const {
+  HeadlessRuntimeState,
+  runtimeStatePath,
+  runtimeUpdateLocked,
+  runtimeUpdateLockPath,
+} = require('./headless-runtime-state');
 const workspace = require('./project-workspace-read');
 const ClaudeConversationSearchService = require('../services/claude-conversation-search-service');
 const CodexConversationSearchService = require('../services/codex-conversation-search-service');
@@ -25,6 +36,7 @@ const { generateConversationTitle } = require('../../application/conversation-ti
 const { forkConversation } = require('../services/conversation-fork-service');
 
 const DEFAULT_BACKEND_URL = 'https://codeagentswarm-backend-production.up.railway.app';
+const SESSION_RESTORE_CONCURRENCY = 6;
 const KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const TERMINAL_STATUSES = [
   { status_key: 'needs_input', label: 'Needs input', color: '#f97316', icon: 'message-circle-question', sort_order: 1 },
@@ -61,6 +73,20 @@ const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'workspace.git.switch',
   'workspace.git.create',
 ]);
+const FINAL_COORDINATION_STATUSES = new Set(['done', 'pushed', 'completed', 'finished']);
+const COORDINATION_IDLE_MS = 30 * 60_000;
+
+function isCoordinatedSessionEligible(session, now = Date.now()) {
+  if (!session || session.state === 'stopped' || typeof session.terminalUuid !== 'string' || !session.terminalUuid) return false;
+  const status = typeof session.workStatus === 'string' ? session.workStatus.trim().toLowerCase() : '';
+  if (FINAL_COORDINATION_STATUSES.has(status)) return false;
+  if (session.currentTurn?.state === 'running' || status === 'needs_input' || status === 'working') return true;
+  const lastActivity = Number(session.lastActivityAt) || Date.parse(session.lastActivityAt);
+  if (Number.isFinite(lastActivity) && now - lastActivity > COORDINATION_IDLE_MS) return false;
+  return Array.from(session.items?.values?.() || []).some((item) => (
+    item?.itemType === 'user_message' || item?.itemType === 'assistant_message'
+  ));
+}
 
 function appDataPath({ env = process.env, platform = process.platform, home = os.homedir() } = {}) {
   if (platform === 'linux') {
@@ -321,12 +347,14 @@ function createHeadlessHost({
 } = {}) {
   if (typeof getToken !== 'function') throw new Error('CAS CLI requires an access token provider');
   if (!validIdentity(identity)) throw new Error('CAS CLI identity is invalid');
+  const resolvedDataPath = dataPath || appDataPath({ env });
   const database = suppliedDatabase || new DatabaseManager(null, {
-    databasePath: runtimeDatabasePath(identity, { env, dataPath }),
+    databasePath: runtimeDatabasePath(identity, { env, dataPath: resolvedDataPath }),
     env,
   });
   const providerService = suppliedProviderService || new HeadlessProviderService({ env });
   const headlessQuotaService = suppliedQuotaService || require('../../application/services/quota-service').getInstance();
+  let sessionBridge = null;
   const manager = suppliedManager || new DriverChatManager({
     resolveSpawnEnv: async ({ agent, terminalId, terminalUuid } = {}) => ({
       ...env,
@@ -337,12 +365,27 @@ function createHeadlessHost({
       } : {}),
       ...(terminalUuid ? { CODEAGENTSWARM_TERMINAL_ID: terminalUuid } : {}),
       ...(agent ? { CODEAGENTSWARM_AGENT_TYPE: agent } : {}),
+      ...(terminalUuid ? sessionBridge?.sessionEnv(terminalUuid) : {}),
     }),
     resolveDriverOptions: async ({ agent }) => {
       const binaryPath = providerService.executable(agent);
       return binaryPath ? { binaryPath } : {};
     },
   });
+  const chatPreferences = createHeadlessChatPreferences({
+    getSetting: (key) => database.getSetting?.(key),
+    saveSetting: (key, value) => database.saveSetting?.(key, value),
+  });
+  const startSessionWithPreferences = async (options) => {
+    const launchOptions = chatPreferences.apply(options.agent, options);
+    if (launchOptions.permissionMode === undefined) launchOptions.permissionMode = 'default';
+    const started = await manager.startSession(launchOptions);
+    chatPreferences.write(started.agent || options.agent, {
+      permissionMode: started.permissionMode,
+      effort: started.effort,
+    });
+    return started;
+  };
   let runtime;
   const registry = suppliedProjectRegistry || new HeadlessProjectRegistry({
     database,
@@ -358,6 +401,56 @@ function createHeadlessHost({
   let tasksRevisionTimer = null;
   let quotaTimer = null;
   let terminalOrder = 0;
+  let restoringSessions = false;
+  let shuttingDown = false;
+  let restoredSessions = false;
+  let runtimeStatus = 'starting';
+  const stateFilePath = runtimeStatePath({ env, dataPath: dataPath || appDataPath({ env }) });
+  const stateStore = new HeadlessRuntimeState({
+    filePath: stateFilePath,
+    runtimeId: identity.runtimeId,
+    cliVersion: version,
+  });
+  const updateLockPath = runtimeUpdateLockPath(stateFilePath);
+  const pendingTurnSessions = new Set();
+  const failedRestoreSessions = new Map();
+  const persistSessions = () => {
+    if (!runtime || restoringSessions || shuttingDown) return;
+    const sessions = [...runtime.sessions.values(), ...failedRestoreSessions.values()];
+    const busySessions = new Set([...runtime.remoteTurnSessions, ...pendingTurnSessions]);
+    stateStore.write(runtimeStatus, sessions, busySessions);
+  };
+  const sendTurn = async (sessionId, input) => {
+    pendingTurnSessions.add(sessionId);
+    persistSessions();
+    try {
+      if (runtimeUpdateLocked(updateLockPath)) {
+        const error = new Error('CAS Cloud is restarting for an update; retry in a moment');
+        error.code = 'runtime_updating';
+        throw error;
+      }
+      return await manager.sendTurn(sessionId, input);
+    } catch (error) {
+      pendingTurnSessions.delete(sessionId);
+      persistSessions();
+      throw error;
+    }
+  };
+  const onTurnLifecycle = ({ sessionId, event } = {}) => {
+    if (['turn.started', 'turn.completed', 'session.exited'].includes(event?.type)) {
+      pendingTurnSessions.delete(sessionId);
+    }
+  };
+  manager.on(SESSION_EVENT, onTurnLifecycle);
+  const onSessionPreferenceChanged = ({ sessionId, event } = {}) => {
+    if (event?.type !== 'session.config.updated') return;
+    const agent = runtime?.sessions.get(sessionId)?.agent || event.provider;
+    chatPreferences.write(agent, {
+      permissionMode: event.payload?.permissionMode,
+      effort: event.payload?.effort,
+    });
+  };
+  manager.on(SESSION_EVENT, onSessionPreferenceChanged);
 
   const publishTasksChanged = (projectId) => {
     const revision = (taskRevisions.get(projectId) || 0) + 1;
@@ -425,6 +518,61 @@ function createHeadlessHost({
     if (typeof service?.getConversationContent !== 'function') return [];
     return service.getConversationContent(sessionId, projectDir);
   };
+  const listCoordinatedSessions = () => ({
+    sessions: Array.from(runtime.sessions.values()).flatMap((session) => (
+      isCoordinatedSessionEligible(session)
+        ? [{
+          id: session.terminalUuid,
+          name: session.title || `${session.agent || 'Agent'} session`,
+          agent: session.agent || session.provider || '',
+          project: session.project?.name || '',
+          goal: session.goal || '',
+          activity: session.activity || '',
+          status: session.workStatus || '',
+          surface: 'chat',
+          state: session.workStatus === 'needs_input'
+            ? 'needs_input'
+            : session.currentTurn?.state === 'running' ? 'working' : 'idle',
+        }]
+        : []
+    )).slice(0, 100),
+  });
+  const readCoordinatedTranscript = async ({ targetSessionId, limit }) => {
+    const session = Array.from(runtime.sessions.values()).find((candidate) => (
+      candidate.terminalUuid === targetSessionId && isCoordinatedSessionEligible(candidate)
+    ));
+    if (!session) throw new Error('The target session is unavailable');
+    const service = historyServices[session.agent];
+    const projectDir = session.agent === 'claude' && typeof service?.encodeProjectPath === 'function'
+      ? service.encodeProjectPath(session.cwd)
+      : session.cwd;
+    let messages = await getConversationContent({
+      agent: session.agent,
+      sessionId: session.threadId || session.sessionId,
+      projectDir,
+    }).catch(() => []);
+    if (!Array.isArray(messages) || messages.length === 0) {
+      messages = Array.from(session.items.values()).flatMap((item) => {
+        const role = item.itemType === 'assistant_message'
+          ? 'assistant'
+          : item.itemType === 'user_message' ? 'user' : null;
+        const content = item.data?.text || item.content?.assistant_text || item.detail;
+        return role && typeof content === 'string' && content.trim()
+          ? [{ role, content, timestamp: item.endedAtMs || item.startedAtMs }]
+          : [];
+      });
+    }
+    const snapshot = boundedConversationMessages(messages, { limit });
+    return {
+      session: {
+        id: targetSessionId,
+        name: session.title || `${session.agent || 'Agent'} session`,
+        agent: session.agent || session.provider || '',
+        project: session.project?.name || '',
+      },
+      ...snapshot,
+    };
+  };
 
   const updateIdentity = (sessionId, patch) => {
     runtime.updateSessionIdentity({ sessionId, ...patch });
@@ -447,12 +595,11 @@ function createHeadlessHost({
     try {
       const terminalId = ++terminalOrder;
       const terminalUuid = crypto.randomUUID();
-      started = await manager.startSession({
+      started = await startSessionWithPreferences({
         ...startOptions,
         cwd: project.path,
         terminalId,
         terminalUuid,
-        permissionMode: 'default',
         useWorktree: false,
       });
       updateIdentity(started.sessionId, {
@@ -461,7 +608,7 @@ function createHeadlessHost({
         workStatus: 'working',
       });
       if (initialPrompt) {
-        await manager.sendTurn(started.sessionId, { text: initialPrompt });
+        await sendTurn(started.sessionId, { text: initialPrompt });
       }
       return started;
     } catch (error) {
@@ -502,12 +649,12 @@ function createHeadlessHost({
     try {
       const terminalId = ++terminalOrder;
       const terminalUuid = crypto.randomUUID();
-      started = await manager.startSession({
+      started = await startSessionWithPreferences({
         agent: targetAgent,
         cwd: source.cwd,
         terminalId,
         terminalUuid,
-        permissionMode: 'default',
+        ...(source.permissionMode ? { permissionMode: source.permissionMode } : {}),
         useWorktree: false,
       });
       updateIdentity(started.sessionId, {
@@ -516,7 +663,7 @@ function createHeadlessHost({
         workStatus: 'working',
         project: source.project,
       });
-      await manager.sendTurn(started.sessionId, { text: handoff.prompt });
+      await sendTurn(started.sessionId, { text: handoff.prompt });
       return { success: true, sessionId: started.sessionId };
     } catch (error) {
       if (started?.sessionId) await manager.stopSession(started.sessionId);
@@ -560,12 +707,13 @@ function createHeadlessHost({
       });
       if (!forked?.success || !forked.newSessionId) return forked || { success: false, error: 'Fork failed' };
       terminalOrder = Math.max(terminalOrder, Number(source.terminalOrder) || 0);
-      const started = await manager.startSession({
+      const started = await startSessionWithPreferences({
         agent: source.agent,
         cwd: source.cwd,
         terminalId: ++terminalOrder,
         terminalUuid: crypto.randomUUID(),
-        permissionMode: 'default',
+        ...(source.effort !== undefined && source.effort !== null ? { effort: source.effort } : {}),
+        ...(source.permissionMode ? { permissionMode: source.permissionMode } : {}),
         resumeSessionId: forked.newSessionId,
         useWorktree: false,
       });
@@ -605,9 +753,11 @@ function createHeadlessHost({
         return TERMINAL_STATUSES;
       }
     },
-    getClientMetadata: () => ({ version, channel, client: 'cas-cli', headless: true }),
+    getClientMetadata: () => ({ version, channel, client: 'cas-cli', headless: true, platform: process.platform }),
     getHistory,
     getConversationContent,
+    listCoordinatedSessions,
+    readCoordinatedTranscript,
     listTasks,
     createTask: (payload) => taskService.create(payload),
     updateTask: (payload) => taskService.update(payload),
@@ -652,6 +802,8 @@ function createHeadlessHost({
     }),
     minimizeSession: ({ sessionId }) => updateIdentity(sessionId, { minimized: true }),
     restoreSession: ({ sessionId }) => updateIdentity(sessionId, { minimized: false }),
+    sendTurn,
+    onSessionsChanged: persistSessions,
   });
   const onProviderLoginEvent = (event) => {
     runtime.publishProviderLoginEvent(event);
@@ -668,6 +820,17 @@ function createHeadlessHost({
     backendUrl,
   });
   runtime.notifyAttention = (payload) => relay.notifyAttention(payload);
+  const remoteRuntimeClient = new RemoteRuntimeClient({
+    store: new RemoteRuntimeStore({
+      filePath: path.join(resolvedDataPath, 'remote-runtime.json'),
+    }),
+    deviceName: `${os.hostname().replace(/\.local$/i, '').replace(/-/g, ' ')} CAS Cloud`,
+  });
+  sessionBridge = new HeadlessSessionBridge({
+    runtime,
+    remoteClient: remoteRuntimeClient,
+    dataPath: resolvedDataPath,
+  });
 
   return {
     identity,
@@ -678,36 +841,127 @@ function createHeadlessHost({
     databasePath: database.dbPath,
     refreshTasksRevision,
     relay,
+    remoteRuntimeClient,
     runtime,
+    sessionBridge,
     async start() {
-      if (!tasksRevisionTimer) {
-        tasksRevisionTimer = setInterval(() => {
-          refreshTasksRevision();
-          processHeadlessNotifications(runtime);
-        }, 1000);
-        tasksRevisionTimer.unref?.();
-      }
       try {
-        await headlessQuotaService.refresh();
-      } catch (_) {}
-      if (!quotaTimer) {
-        quotaTimer = setInterval(async () => {
+        runtime.start();
+        await sessionBridge.start();
+        await remoteRuntimeClient.start();
+        if (!restoredSessions) {
+          const savedSessions = stateStore.loadSessions();
+          stateStore.write('starting', savedSessions);
+          failedRestoreSessions.clear();
+          restoringSessions = true;
           try {
-            await headlessQuotaService.refresh();
-            runtime.publishQuota();
-          } catch (_) {}
-        }, 5 * 60 * 1000);
-        quotaTimer.unref?.();
+            let nextSession = 0;
+            const restoreNext = async () => {
+              while (nextSession < savedSessions.length) {
+                const saved = savedSessions[nextSession];
+                nextSession += 1;
+                const project = registry.resolveLegacyPath(saved.cwd);
+                if (!project) {
+                  failedRestoreSessions.set(`${saved.agent}:${saved.threadId}`, saved);
+                  continue;
+                }
+                terminalOrder = Math.max(terminalOrder, saved.terminalOrder || 0);
+                try {
+                  const started = await manager.startSession({
+                    agent: saved.agent,
+                    ...(saved.accountId && saved.accountId !== 'current' ? { accountId: saved.accountId } : {}),
+                    cwd: saved.cwd,
+                    ...(saved.model ? { model: saved.model } : {}),
+                    ...(saved.effort ? { effort: saved.effort } : {}),
+                    ...(saved.interactionMode ? { interactionMode: saved.interactionMode } : {}),
+                    ...(saved.serviceTier ? { providerOptions: [{ id: 'serviceTier', value: saved.serviceTier }] } : {}),
+                    terminalId: saved.terminalOrder || ++terminalOrder,
+                    terminalUuid: saved.terminalUuid || crypto.randomUUID(),
+                    permissionMode: saved.permissionMode || 'default',
+                    resumeSessionId: saved.threadId,
+                    useWorktree: false,
+                  });
+                  updateIdentity(started.sessionId, {
+                    title: saved.title,
+                    goal: saved.goal,
+                    activity: saved.activity,
+                    activityHistory: saved.activityHistory,
+                    workStatus: saved.workStatus,
+                    lastActivityAt: saved.lastActivityAt,
+                    needsAttention: saved.needsAttention,
+                    attentionVersion: saved.attentionVersion,
+                    minimized: saved.minimized,
+                    project,
+                    terminalOrder: saved.terminalOrder,
+                  });
+                } catch (error) {
+                  failedRestoreSessions.set(`${saved.agent}:${saved.threadId}`, saved);
+                  console.warn(`CAS Cloud could not restore ${saved.agent}: ${error.message}`);
+                }
+              }
+            };
+            await Promise.all(Array.from(
+              { length: Math.min(SESSION_RESTORE_CONCURRENCY, savedSessions.length) },
+              restoreNext,
+            ));
+          } finally {
+            restoringSessions = false;
+            restoredSessions = true;
+          }
+        }
+        if (!tasksRevisionTimer) {
+          tasksRevisionTimer = setInterval(() => {
+            refreshTasksRevision();
+            processHeadlessNotifications(runtime);
+          }, 1000);
+          tasksRevisionTimer.unref?.();
+        }
+        try {
+          await headlessQuotaService.refresh();
+        } catch (_) {}
+        if (!quotaTimer) {
+          quotaTimer = setInterval(async () => {
+            try {
+              await headlessQuotaService.refresh();
+              runtime.publishQuota();
+            } catch (_) {}
+          }, 5 * 60 * 1000);
+          quotaTimer.unref?.();
+        }
+        const connected = await relay.ensureConnected();
+        runtimeStatus = failedRestoreSessions.size ? 'degraded' : 'ready';
+        persistSessions();
+        return connected;
+      } catch (error) {
+        try {
+          await this.stop({ persistState: false });
+        } catch (cleanupError) {
+          console.error(`Could not clean up CAS Cloud after startup failed: ${cleanupError.message}`);
+        }
+        throw error;
       }
-      return relay.ensureConnected();
     },
-    async stop() {
+    async stop({ persistState = true } = {}) {
+      shuttingDown = true;
+      if (persistState) {
+        try {
+          const sessions = [...runtime.sessions.values(), ...failedRestoreSessions.values()];
+          const busySessions = new Set([...runtime.remoteTurnSessions, ...pendingTurnSessions]);
+          stateStore.write('stopping', sessions, busySessions);
+        } catch (error) {
+          console.error(`Could not persist CAS Cloud sessions before shutdown: ${error.message}`);
+        }
+      }
       clearInterval(tasksRevisionTimer);
       tasksRevisionTimer = null;
       clearInterval(quotaTimer);
       quotaTimer = null;
+      await sessionBridge.stop();
+      remoteRuntimeClient.stop();
       relay.stop();
       runtime.stop();
+      manager.removeListener(SESSION_EVENT, onTurnLifecycle);
+      manager.removeListener(SESSION_EVENT, onSessionPreferenceChanged);
       await registry.stop();
       providerService.removeListener('login-event', onProviderLoginEvent);
       if (!suppliedProviderService) providerService.stop();

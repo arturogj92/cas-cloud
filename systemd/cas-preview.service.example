@@ -1,0 +1,17 @@
+[Unit]
+Description=CAS ephemeral development preview service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cas-preview serve --listen 127.0.0.1 --port 41820 --socket /run/cas-preview.sock --root /srv/cas-projects --ttl-seconds 7200 --public-origin https://preview.example.com
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

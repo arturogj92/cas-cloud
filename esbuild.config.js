@@ -6,6 +6,15 @@ const packageJson = require('./package.json');
 
 const packageDirectory = __dirname;
 const outputDirectory = path.join(packageDirectory, 'dist');
+const sourceTemplateDirectory = path.join(packageDirectory, 'src', 'infrastructure', 'config', 'templates');
+const outputTemplateDirectory = path.join(outputDirectory, 'templates');
+const titleTemplateFiles = [
+  'antigravity-md-titles-section.md',
+  'codex-md-titles-section.md',
+  'grok-md-titles-section.md',
+  'kimi-md-titles-section.md',
+  'opencode-md-titles-section.md',
+];
 const runtimeDependencies = new Set(Object.keys(packageJson.dependencies));
 const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
 
@@ -48,6 +57,7 @@ async function build() {
   const result = await esbuild.build({
     entryPoints: {
       cas: path.join(packageDirectory, 'src', 'entry.js'),
+      'cas-preview': path.join(packageDirectory, 'src', 'cli', 'cas-preview.js'),
       'mcp-stdio-server': path.join(packageDirectory, 'src', 'infrastructure', 'mcp', 'mcp-stdio-server.js'),
       'antigravity-mcp-launcher': path.join(packageDirectory, 'src', 'infrastructure', 'mcp', 'antigravity-mcp-launcher.js'),
     },
@@ -85,6 +95,13 @@ async function build() {
       if (bundle.includes(forbidden)) throw new Error(`Bundle contains forbidden dependency: ${forbidden}`);
     }
     fs.chmodSync(path.resolve(outputFile), 0o755);
+  }
+  fs.mkdirSync(outputTemplateDirectory, { recursive: true });
+  for (const template of titleTemplateFiles) {
+    fs.copyFileSync(
+      path.join(sourceTemplateDirectory, template),
+      path.join(outputTemplateDirectory, template),
+    );
   }
   return result;
 }

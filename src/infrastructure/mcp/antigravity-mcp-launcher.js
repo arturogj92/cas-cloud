@@ -10,6 +10,7 @@ const MAX_CAPABILITY_BYTES = 16 * 1024;
 const MAX_ANCESTOR_DEPTH = 2;
 const SESSION_ENV_KEYS = [
   'CODEAGENTSWARM_SESSION_COMMUNICATION_ENABLED',
+  'CODEAGENTSWARM_SESSION_COMMUNICATION_SEND_ENABLED',
   'CODEAGENTSWARM_SESSION_BRIDGE_PORT',
   'CODEAGENTSWARM_SESSION_BRIDGE_TOKEN',
   'CODEAGENTSWARM_TERMINAL_ID',
@@ -36,6 +37,7 @@ function validEnv(env) {
   if (!env || typeof env !== 'object' || Array.isArray(env)) return false;
   if (Object.keys(env).sort().join('\0') !== [...SESSION_ENV_KEYS].sort().join('\0')) return false;
   if (env.CODEAGENTSWARM_SESSION_COMMUNICATION_ENABLED !== '1') return false;
+  if (!['0', '1'].includes(env.CODEAGENTSWARM_SESSION_COMMUNICATION_SEND_ENABLED)) return false;
   const port = Number(env.CODEAGENTSWARM_SESSION_BRIDGE_PORT);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
   const token = env.CODEAGENTSWARM_SESSION_BRIDGE_TOKEN;
