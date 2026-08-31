@@ -12,6 +12,21 @@ that an operator may place behind their own TLS reverse proxy.
 - `npm test`
 - `node dist/cas.js doctor`
 
+## Source and releases
+
+- The canonical implementation is exported from the private CodeAgentSwarm source;
+  do not hand-edit generated runtime files in this repository and then leave the
+  private source behind.
+- Keep `.cas-cloud-export.json` committed. It records the private source commit and
+  exact generated file set used for this public snapshot.
+- Before publishing, confirm the version is newer than the npm `latest` tag, run
+  `npm install`, `npm run build`, `npm test`, `npx --yes . --version` and
+  `node dist/cas.js doctor`, then inspect the packed file list.
+- Push and npm publication are release actions. Obtain explicit authorization
+  immediately before them, tag the published commit, and verify the registry tag.
+- Deploy managed hosts through `cas-cli update`; never replace the `current` symlink
+  by hand. The updater owns the idle-session guard, health check and rollback.
+
 ## Boundaries
 
 - Keep Desktop, Electron UI, mobile UI and product-internal assets out of this repository.

@@ -293,6 +293,17 @@ function createHistoryServices() {
   };
 }
 
+function headlessStatusAlert(status) {
+  if (typeof status !== 'string' || !status.trim() || status === 'working') return null;
+  const body = {
+    needs_input: 'Agent needs confirmation',
+    needs_testing: 'Ready for testing',
+    done: 'Session finished',
+    pushed: 'Changes pushed',
+  }[status] || `Session status: ${status.replaceAll('_', ' ')}`;
+  return { body };
+}
+
 function processHeadlessNotifications(runtime, filePath = path.join(os.homedir(), '.codeagentswarm', 'task_notifications.json')) {
   try {
     const stat = fs.lstatSync(filePath);
@@ -314,6 +325,12 @@ function processHeadlessNotifications(runtime, filePath = path.join(os.homedir()
         identity = { workStatus: notification.status };
       }
       if (!identity || !runtime.updateSessionIdentity({ terminalUuid: notification.terminal_uuid, ...identity })) continue;
+      const alert = notification.type === 'terminal_status_update'
+        ? headlessStatusAlert(notification.status)
+        : null;
+      if (alert && typeof runtime.notifySessionIdentity === 'function') {
+        void runtime.notifySessionIdentity({ terminalUuid: notification.terminal_uuid }, alert);
+      }
       notification.processed = true;
       applied += 1;
     }

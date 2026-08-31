@@ -743,6 +743,24 @@ class MobileRuntime {
     return true;
   }
 
+  notifySessionIdentity(identity = {}, alert = {}) {
+    const directId = cleanText(identity.sessionId, 128);
+    const threadId = cleanText(identity.threadId, 500);
+    const terminalUuid = cleanText(identity.terminalUuid, 500);
+    const sessions = Array.from(this.sessions.values());
+    const terminalMatches = terminalUuid
+      ? sessions.filter((candidate) => candidate.terminalUuid === terminalUuid && candidate.state !== 'stopped')
+      : [];
+    const session = (directId && this.sessions.get(directId))
+      || (threadId && sessions.find((candidate) => candidate.threadId === threadId && candidate.state !== 'stopped'))
+      || (terminalMatches.length === 1 && terminalMatches[0]);
+    if (!session || session.state === 'stopped' || typeof this.notifyAttention !== 'function') {
+      return Promise.resolve({ sent: 0 });
+    }
+    return Promise.resolve(this.notifyAttention(attentionPushPayload(session, alert)))
+      .catch(() => ({ sent: 0 }));
+  }
+
   notifyTerminal(terminalId, alert = {}) {
     if (!Number.isSafeInteger(terminalId) || terminalId < 1 || typeof this.notifyAttention !== 'function') {
       return Promise.resolve({ sent: 0 });

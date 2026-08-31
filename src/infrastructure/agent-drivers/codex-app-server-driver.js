@@ -912,14 +912,6 @@ class CodexAppServerDriver extends EventEmitter {
       );
     }
 
-    if (!toolsDisabled && !imageGenerationOnly) {
-      try {
-        await this._ensureRequiredMcpServer();
-      } catch (error) {
-        console.warn(`[CodexAppServerDriver] Continuing without verified task MCP tools: ${error.message}`);
-      }
-    }
-
     const utilityInstructions = imageGenerationOnly
       ? IMAGE_ONLY_INSTRUCTIONS
       : toolsDisabled
@@ -985,6 +977,13 @@ class CodexAppServerDriver extends EventEmitter {
     }
 
     this._threadId = result?.thread?.id || result?.threadId || (resumeSessionId || null);
+    if (!toolsDisabled && !imageGenerationOnly) {
+      try {
+        await this._ensureRequiredMcpServer(this._threadId);
+      } catch (error) {
+        console.warn(`[CodexAppServerDriver] Continuing without verified task MCP tools: ${error.message}`);
+      }
+    }
     this._sessionCwd = result?.cwd || result?.thread?.cwd || cwd;
     let historyPage = result?.initialTurnsPage;
     const returnedTurns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
@@ -1036,13 +1035,14 @@ class CodexAppServerDriver extends EventEmitter {
     };
   }
 
-  async _listMcpServers() {
+  async _listMcpServers(threadId) {
     const servers = [];
     const seenCursors = new Set();
     let cursor;
     do {
       const result = await this._request('mcpServerStatus/list', {
         detail: 'toolsAndAuthOnly',
+        ...(threadId ? { threadId } : {}),
         ...(cursor ? { cursor } : {})
       });
       if (Array.isArray(result?.data)) servers.push(...result.data);
@@ -1054,21 +1054,18 @@ class CodexAppServerDriver extends EventEmitter {
     return servers;
   }
 
-  async _ensureRequiredMcpServer() {
+  async _ensureRequiredMcpServer(threadId) {
     if (!this._requiredMcpServer) return;
     const connected = (servers) => servers.some((server) => (
       server?.name === this._requiredMcpServer
       && Object.values(server.tools || {}).some((tool) => tool?.name === REQUIRED_TASK_MCP_TOOL)
     ));
-    if (connected(await this._listMcpServers())) return;
+    if (connected(await this._listMcpServers(threadId))) return;
 
     if (this._repairMcpConfig && await this._repairMcpConfig() === false) {
       throw new Error('CodeAgentSwarm could not repair the Codex MCP configuration. Restart CodeAgentSwarm and retry Chat.');
     }
     await this._request('config/mcpServer/reload', null);
-    if (!connected(await this._listMcpServers())) {
-      throw new Error('CodeAgentSwarm MCP tools are unavailable in Codex. Restart CodeAgentSwarm and retry Chat.');
-    }
   }
 
   /**
