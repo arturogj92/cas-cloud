@@ -951,7 +951,8 @@ class AcpAgentDriver extends EventEmitter {
       if (this.provider === 'kimi' && resumeSessionId) {
         this._restoreKimiUserHistory(resumeSessionId);
       }
-      this._historyEvents = this._historyEvents.slice(-CHAT_HISTORY_EVENT_LIMIT);
+      const historyEvents = this._historyEvents.slice(-CHAT_HISTORY_EVENT_LIMIT);
+      this._historyEvents = [];
       this._state = 'ready';
       this._emit({
         type: 'thread.started',
@@ -972,7 +973,7 @@ class AcpAgentDriver extends EventEmitter {
           || (cursorModel && cursorEffortFromParsed(cursorModel))
           || modelEffort
           || this._effort,
-        historyEvents: this._historyEvents.slice(),
+        historyEvents,
         capabilities: this._capabilities,
         interactionMode: this._modeState?.currentModeId || 'default',
         interactionModes: (Array.isArray(this._modeState?.availableModes)

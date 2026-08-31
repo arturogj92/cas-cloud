@@ -118,6 +118,7 @@ const DEFAULT_STARTUP_PROBE_MS = 750;
 const DEFAULT_AUTH_PROBE_MS = 15000;
 const STOP_DRAIN_TIMEOUT_MS = 5000;
 const DETAIL_MAX_LENGTH = 400;
+const CLAUDE_HISTORY_TAIL_INITIAL_BYTES = 2 * 1024 * 1024;
 
 /** Reasoning effort levels accepted by the SDK `effort` option. */
 const CLAUDE_EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -242,6 +243,64 @@ function parseJsonlLines(text) {
   return lines;
 }
 
+/** Read only as much of an append-only transcript tail as the Chat limit needs. */
+function readClaudeTranscriptTail(filePath) {
+  const size = fs.statSync(filePath).size;
+  if (size === 0) return [];
+
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let position = size;
+    let fragmentParts = [];
+    let lines = [];
+    let eventCount = 0;
+    while (position > 0) {
+      const length = Math.min(position, CLAUDE_HISTORY_TAIL_INITIAL_BYTES);
+      const start = position - length;
+      const buffer = Buffer.allocUnsafe(length);
+      let offset = 0;
+      while (offset < length) {
+        const bytesRead = fs.readSync(fd, buffer, offset, length - offset, start + offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+
+      const chunk = buffer.subarray(0, offset);
+      let completeParts = [chunk, ...fragmentParts];
+      if (start > 0) {
+        const newline = chunk.indexOf(0x0a);
+        if (newline === -1) {
+          fragmentParts.unshift(chunk);
+          position = start;
+          continue;
+        }
+        fragmentParts = [Buffer.from(chunk.subarray(0, newline))];
+        completeParts[0] = chunk.subarray(newline + 1);
+      }
+
+      const complete = completeParts.length === 1
+        ? completeParts[0]
+        : Buffer.concat(completeParts);
+      const batch = parseJsonlLines(complete.toString('utf8')).filter((line) => (
+        line
+        && typeof line === 'object'
+        && line.isSidechain !== true
+        && line.isMeta !== true
+        && line.message
+        && typeof line.message === 'object'
+        && (line.type === 'user' || line.type === 'assistant')
+      ));
+      lines = batch.concat(lines);
+      eventCount += mapClaudeTranscriptToEvents(batch).length;
+      if (eventCount >= CHAT_HISTORY_EVENT_LIMIT) return lines;
+      position = start;
+    }
+    return lines;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * Locate a subagent's transcript inside a session's `subagents/` tree.
  *
@@ -314,7 +373,7 @@ function defaultLoadTranscript(sessionId, configDir) {
     const transcriptPath = findSessionTranscript(sessionId, projectsDir);
     if (!transcriptPath) return null;
 
-    return parseJsonlLines(fs.readFileSync(transcriptPath, 'utf8'));
+    return readClaudeTranscriptTail(transcriptPath);
   } catch (error) {
     return null;
   }
@@ -2951,5 +3010,6 @@ module.exports = {
   createInitialMapperState,
   buildClaudeChildEnv,
   parseJsonlLines,
+  readClaudeTranscriptTail,
   resolveSubagentTranscript
 };
