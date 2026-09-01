@@ -1,6 +1,6 @@
 {
   "name": "@codeagentswarm/cas-cloud",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "CAS Cloud runtime for remote CodeAgentSwarm sessions",
   "author": "Arturo Garcia <hello@codeagentswarm.com>",
   "license": "PolyForm-Noncommercial-1.0.0",

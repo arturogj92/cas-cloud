@@ -272,6 +272,8 @@ class PeerRuntimeNetwork {
     if (event?.kind === 'peer.offline' && ID_PATTERN.test(event.targetRuntimeId || '')) {
       this._diagnostic('peer.offline', { peer: peerRef(event.targetRuntimeId) });
       this.clientSockets.get(event.targetRuntimeId)?.offline();
+      this.serverSockets.get(event.targetRuntimeId)?.close();
+      this.serverSockets.delete(event.targetRuntimeId);
       return;
     }
     if (event?.kind !== 'peer.message'
