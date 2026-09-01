@@ -905,7 +905,6 @@ function createHeadlessHost({
     loadRosters: () => database.getSetting?.('mobile_private_peer_rosters') || {},
     saveRosters: (rosters) => database.setSetting?.('mobile_private_peer_rosters', rosters),
   });
-  peerRuntimeNetwork.start();
   runtime.notifyAttention = (payload) => relay.notifyAttention(payload);
   const remoteRuntimeClient = new RemoteRuntimeClient({
     store: new RemoteRuntimeStore({
@@ -1033,6 +1032,7 @@ function createHeadlessHost({
           quotaTimer.unref?.();
         }
         const connected = await relay.ensureConnected();
+        peerRuntimeNetwork.start();
         runtimeStatus = failedRestoreSessions.size ? 'degraded' : 'ready';
         persistSessions();
         return connected;
