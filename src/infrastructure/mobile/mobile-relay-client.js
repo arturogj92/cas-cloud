@@ -135,6 +135,8 @@ class MobileRelayClient extends EventEmitter {
     this.peerReady = false;
     this.peerAccess = null;
     this.peerHandshakeTimer = null;
+    this.peerReconnectAttempt = 0;
+    this.peerReconnectTimer = null;
     this.peerBatchTimer = null;
     this.peerBatch = [];
     this.peerBatchBytes = 0;
@@ -248,6 +250,7 @@ class MobileRelayClient extends EventEmitter {
     this._stopHeartbeat();
     this._reportPeerMetrics('stop', true);
     this._closePeerGroup({ fallback: false });
+    this.peerReconnectAttempt = 0;
     this._clearRuntimeBatches();
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -787,6 +790,7 @@ class MobileRelayClient extends EventEmitter {
       socket = this.createWebSocket(peerRelayUrl(this.relayOrigin, this.peerAccess.relayGroupId));
     } catch (error) {
       this.emit('diagnostic', { event: 'peer.group_connect_failed', code: error?.code });
+      this._schedulePeerReconnect();
       return;
     }
     this.peerSocket = socket;
@@ -816,6 +820,10 @@ class MobileRelayClient extends EventEmitter {
     socket.on('error', (error) => {
       if (this.peerSocket === socket) {
         this.emit('diagnostic', { event: 'peer.group_connect_failed', code: error?.code });
+        try {
+          if (typeof socket.terminate === 'function') socket.terminate();
+          else socket.close();
+        } catch (_) { /* already closed */ }
       }
     });
     socket.on('close', () => this._handlePeerClose(socket));
@@ -829,6 +837,7 @@ class MobileRelayClient extends EventEmitter {
       clearTimeout(this.peerHandshakeTimer);
       this.peerHandshakeTimer = null;
       this.peerReady = true;
+      this.peerReconnectAttempt = 0;
       this.emit('diagnostic', {
         event: 'peer.group_connected',
         connection: CONNECTION_REF_PATTERN.test(message.connection || '') ? message.connection : undefined,
@@ -852,6 +861,49 @@ class MobileRelayClient extends EventEmitter {
     if (this.peerSocket !== socket) return;
     this._closePeerGroup({ fallback: true });
     this.emit('diagnostic', { event: 'peer.group_closed' });
+    this._schedulePeerReconnect();
+  }
+
+  _schedulePeerReconnect() {
+    if (!this.enabled || this.status !== 'online' || !this.peerAccess || this.peerReconnectTimer) return;
+    const attempt = this.peerReconnectAttempt++;
+    const delay = Math.min(15_000, 500 * (2 ** attempt));
+    this.emit('diagnostic', { event: 'peer.group_reconnect_scheduled', attempt, delay });
+    this.peerReconnectTimer = setTimeout(() => {
+      this.peerReconnectTimer = null;
+      void this._refreshPeerGroup();
+    }, delay);
+    this.peerReconnectTimer.unref?.();
+  }
+
+  async _refreshPeerGroup() {
+    if (!this.enabled || this.status !== 'online' || this.peerSocket || !this.peerAccess) return;
+    const generation = this.connectionGeneration;
+    try {
+      // Desktop relay tickets expire after two minutes. A peer-only reconnect must fetch a
+      // fresh ticket without disturbing the healthy main relay socket.
+      const access = await this._api('/api/mobile/desktop-ticket', {
+        runtimeId: this.runtimeId,
+        publicKey: this.keyPair.publicKey,
+        ...clientMetadata(this.getClientMetadata()),
+      });
+      if (generation !== this.connectionGeneration || !this.enabled
+        || this.status !== 'online' || this.peerSocket) return;
+      this.relayOrigin = new URL(access.relayOrigin).origin;
+      this.peerAccess = RELAY_GROUP_PATTERN.test(access.relayGroupId || '')
+        ? { relayGroupId: access.relayGroupId, ticket: access.ticket }
+        : null;
+      this._connectPeerGroup();
+    } catch (error) {
+      if (generation !== this.connectionGeneration || !this.enabled || this.status !== 'online') return;
+      this.emit('diagnostic', {
+        event: 'peer.group_connect_failed',
+        phase: 'ticket',
+        status: error.status,
+        code: error?.code,
+      });
+      this._schedulePeerReconnect();
+    }
   }
 
   _queuePeerMessage(message, bytes) {
@@ -899,10 +951,12 @@ class MobileRelayClient extends EventEmitter {
 
   _sendPeerGroup(message) {
     if (!this.peerReady || !this.peerSocket || this.peerSocket.readyState !== 1) return false;
+    const socket = this.peerSocket;
     try {
-      this.peerSocket.send(JSON.stringify(message));
+      socket.send(JSON.stringify(message));
       return true;
     } catch (_) {
+      this._handlePeerClose(socket);
       return false;
     }
   }
@@ -975,6 +1029,8 @@ class MobileRelayClient extends EventEmitter {
   _closePeerGroup({ fallback }) {
     clearTimeout(this.peerHandshakeTimer);
     this.peerHandshakeTimer = null;
+    clearTimeout(this.peerReconnectTimer);
+    this.peerReconnectTimer = null;
     clearTimeout(this.peerBatchTimer);
     this.peerBatchTimer = null;
     const pending = this.peerBatch;

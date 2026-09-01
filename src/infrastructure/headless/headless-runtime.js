@@ -810,7 +810,7 @@ function createHeadlessHost({
       )).length,
     })),
     getShortcuts: () => database.getAllShortcuts(),
-    replaceShortcuts: (shortcuts) => database.saveShortcuts(shortcuts),
+    replaceShortcuts: (shortcuts) => database.saveLocalShortcuts(shortcuts),
     getQuota: () => headlessQuotaService.getCached(),
     getProjectRoots: () => registry.getRoots(),
     getProjectsRevision: () => registry.getRevision(),

@@ -392,6 +392,7 @@ class DatabaseManager {
 
         // Add Terminal/Chat launch preference to shortcuts (migration)
         this.addViewModeColumnToShortcutsIfNeeded();
+        this.addTargetRefColumnToShortcutsIfNeeded();
 
         // Add base_branch column to worktrees if it doesn't exist (migration)
         this.addBaseBranchColumnToWorktreesIfNeeded();
@@ -929,6 +930,18 @@ class DatabaseManager {
             }
         } catch (error) {
             console.error('Error checking/adding view_mode column:', error);
+        }
+    }
+
+    /** Opaque remote backend/project reference. Local shortcuts keep this NULL. */
+    addTargetRefColumnToShortcutsIfNeeded() {
+        try {
+            const columns = this.db.prepare("PRAGMA table_info(navbar_shortcuts)").all();
+            if (!columns.some(col => col.name === 'target_ref')) {
+                this.db.exec("ALTER TABLE navbar_shortcuts ADD COLUMN target_ref TEXT");
+            }
+        } catch (error) {
+            console.error('Error checking/adding shortcut target_ref column:', error);
         }
     }
 
@@ -2885,8 +2898,8 @@ class DatabaseManager {
                 // Insert new shortcuts
                 const stmt = this.db.prepare(`
                     INSERT INTO navbar_shortcuts
-                    (name, project_path, project_name, project_color, resume_mode, danger_mode, sandbox_mode, use_worktree, view_mode, agent_type, session_id, project_dir, session_label, sort_order)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (name, project_path, project_name, project_color, resume_mode, danger_mode, sandbox_mode, use_worktree, view_mode, agent_type, session_id, project_dir, session_label, target_ref, sort_order)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `);
 
                 validShortcuts.forEach((shortcut, index) => {
@@ -2909,6 +2922,7 @@ class DatabaseManager {
                         shortcut.session_id || shortcut.sessionId || null,       // Conversation to resume (null = plain shortcut)
                         shortcut.project_dir || shortcut.projectDir || null,
                         shortcut.session_label || shortcut.sessionLabel || null, // Conversation title for the tooltip
+                        shortcut.target_ref || shortcut.targetRef || null,
                         index
                     );
                 });
@@ -2919,6 +2933,11 @@ class DatabaseManager {
             console.error('Error saving shortcuts:', err);
             return { success: false, error: err.message };
         }
+    }
+
+    saveLocalShortcuts(shortcuts) {
+        const remoteShortcuts = this.getAllShortcuts().filter((shortcut) => shortcut.target_ref);
+        return this.saveShortcuts([...shortcuts, ...remoteShortcuts]);
     }
 
     // Add a single shortcut

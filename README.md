@@ -166,8 +166,8 @@ new updater once through `npx` from the same environment as the updater service:
 
 ```sh
 CAS_CLI_INSTALL_ROOT="$HOME/.local/share/codeagentswarm-cloud" \
-CAS_CLI_UPDATE_SPEC="@codeagentswarm/cas-cloud@0.0.3" \
-npx --yes "@codeagentswarm/cas-cloud@0.0.3" update
+CAS_CLI_UPDATE_SPEC="@codeagentswarm/cas-cloud@0.0.4" \
+npx --yes "@codeagentswarm/cas-cloud@0.0.4" update
 ```
 
 Carry over any non-secret `CAS_CLI_STATE`, `CAS_CLI_SYSTEMD_SCOPE` and

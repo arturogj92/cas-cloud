@@ -95,7 +95,7 @@ class OpencodeCliStrategy extends CliAgentStrategy {
     getSettingsPath() {
         // SST opencode keeps its config under ~/.config/opencode (XDG-style),
         // not a home-level dotdir like the other agents.
-        return path.join(os.homedir(), '.config', 'opencode');
+        return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'opencode');
     }
 
     getInstructionsFileName() {
@@ -110,7 +110,7 @@ class OpencodeCliStrategy extends CliAgentStrategy {
     getSkillsPath() {
         // App-managed skills live under opencode's XDG config dir, mirroring the
         // per-agent skills layout used by the other CLIs.
-        return path.join(os.homedir(), '.config', 'opencode', 'skills');
+        return path.join(this.getSettingsPath(), 'skills');
     }
 
     supportsSkills() {
