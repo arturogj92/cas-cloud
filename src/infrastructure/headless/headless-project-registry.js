@@ -6,6 +6,7 @@ const { spawn } = require('child_process');
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_CLONES = 2;
 const MAX_QUEUE = 20;
+const ICON_PATTERN = /^(?:emoji:.{1,16}|lucide:[a-z0-9-]{1,80})$/u;
 
 function runtimeError(code, message, retryable = false) {
   const error = new Error(message);
@@ -172,6 +173,10 @@ class HeadlessProjectRegistry {
       );
       INSERT OR IGNORE INTO runtime_project_state (singleton, revision) VALUES (1, 0);
     `);
+    const columns = new Set(this.db.prepare('PRAGMA table_info(runtime_projects)').all().map((column) => column.name));
+    if (!columns.has('display_name')) this.db.exec('ALTER TABLE runtime_projects ADD COLUMN display_name TEXT');
+    if (!columns.has('color')) this.db.exec('ALTER TABLE runtime_projects ADD COLUMN color TEXT');
+    if (!columns.has('icon')) this.db.exec('ALTER TABLE runtime_projects ADD COLUMN icon TEXT');
     const owner = this.db.prepare('SELECT runtime_id FROM runtime_project_identity WHERE singleton = 1').get();
     if (owner && owner.runtime_id !== this.runtimeId) {
       throw runtimeError('runtime_identity_mismatch', 'The runtime database belongs to a different runtime identity');
@@ -343,11 +348,32 @@ class HeadlessProjectRegistry {
       .map((root) => ({ rootId: root.root_id, name: String(root.name).slice(0, 200) }));
   }
 
+  listDirectories({ rootId, relativePath = '.' } = {}) {
+    const root = this._root(rootId);
+    const currentPath = validateRelativePath(relativePath || '.');
+    const target = this._containedExisting(root, currentPath);
+    const parentPath = currentPath === '.' ? null : path.posix.dirname(currentPath);
+    return {
+      rootId: root.root_id,
+      path: currentPath,
+      parentPath: parentPath === '' ? '.' : parentPath,
+      directories: fs.readdirSync(target, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+        .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }))
+        .slice(0, 200)
+        .map((entry) => ({
+          name: entry.name,
+          path: currentPath === '.' ? entry.name : path.posix.join(currentPath, entry.name),
+        })),
+      locations: this.getRoots(),
+    };
+  }
+
   getProjects() {
     return this.db.prepare('SELECT * FROM runtime_projects WHERE registered = 1 ORDER BY created_at, project_id').all()
       .map((row) => ({
         projectId: row.project_id,
-        name: String(row.name).slice(0, 200),
+        name: String(row.display_name || row.name).slice(0, 200),
         path: row.path,
         taskProjectName: row.task_project_name,
         rootId: row.root_id,
@@ -357,6 +383,8 @@ class HeadlessProjectRegistry {
         status: 'available',
         worktreeEligible: false,
         useWorktreeByDefault: false,
+        ...(row.color ? { color: String(row.color).slice(0, 32) } : {}),
+        ...(row.icon ? { icon: String(row.icon).slice(0, 500) } : {}),
       }));
   }
 
@@ -462,6 +490,32 @@ class HeadlessProjectRegistry {
     this.db.prepare('UPDATE runtime_projects SET registered = 0, updated_at = CURRENT_TIMESTAMP WHERE project_id = ?').run(project.projectId);
     const revision = this._bumpRevision();
     return this._recordRequest(requestId, hash, { projectId: project.projectId, revision, registered: false });
+  }
+
+  update({ projectId, displayName, color, icon, requestId }) {
+    const patch = {
+      ...(displayName !== undefined ? { displayName: String(displayName || '').trim().slice(0, 120) } : {}),
+      ...(color !== undefined ? { color: String(color || '').trim().slice(0, 32) } : {}),
+      ...(icon !== undefined ? { icon } : {}),
+    };
+    if (!Object.keys(patch).length || (patch.displayName !== undefined && !patch.displayName)
+      || (patch.icon !== undefined && patch.icon !== null && (typeof patch.icon !== 'string' || !ICON_PATTERN.test(patch.icon)))) {
+      throw runtimeError('invalid_project_update', 'Project changes are invalid');
+    }
+    const hash = requestHash('update', { projectId, ...patch });
+    const duplicate = this._request(requestId, hash);
+    if (duplicate) return duplicate;
+    const project = this.resolveProject(projectId);
+    this.db.prepare(`UPDATE runtime_projects
+      SET display_name = COALESCE(?, display_name), color = COALESCE(?, color), icon = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE project_id = ?`).run(
+        patch.displayName ?? null,
+        patch.color ?? null,
+        patch.icon === undefined ? this.db.prepare('SELECT icon FROM runtime_projects WHERE project_id = ?').get(projectId)?.icon || null : patch.icon,
+        project.projectId,
+      );
+    const revision = this._bumpRevision();
+    return this._recordRequest(requestId, hash, { projectId: project.projectId, revision, updated: true });
   }
 
   clone({ rootId, url, relativePath, requestId }) {

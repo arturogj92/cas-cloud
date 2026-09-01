@@ -3,11 +3,13 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { boundedConversationMessages } = require('../agent-drivers/chat-history-pagination');
-const { askRemoteProject, listRemoteProjects } = require('../mobile/remote-runtime-client');
+const { askRemoteProject, listRemoteProjects, parseRemoteResourceId } = require('../mobile/remote-runtime-client');
 
 const CONTROL_FILE = 'cas-session-bridge.json';
 const REMOTE_PREFIX = 'remote.';
+const REMOTE_REPLY_PREFIX = 'remote-reply.';
 const MAX_BODY_BYTES = 16 * 1024;
+const REPLY_TTL_MS = 30 * 60 * 1000;
 
 function isAlive(pid) {
   try {
@@ -117,18 +119,23 @@ function publicRemoteState(client) {
 }
 
 class HeadlessSessionBridge {
-  constructor({ runtime, remoteClient, dataPath, randomBytes = crypto.randomBytes } = {}) {
-    if (!runtime || !remoteClient || !path.isAbsolute(dataPath || '')) {
+  constructor({ runtime, remoteClient, peerRuntimeNetwork = null, dataPath, deliverMessage, randomBytes = crypto.randomBytes } = {}) {
+    if (!runtime || !remoteClient || typeof deliverMessage !== 'function' || !path.isAbsolute(dataPath || '')) {
       throw new Error('CAS Cloud session bridge configuration is invalid');
     }
     this.runtime = runtime;
     this.remoteClient = remoteClient;
+    this.peerRuntimeNetwork = peerRuntimeNetwork;
     this.dataPath = dataPath;
+    this.deliverMessage = deliverMessage;
     this.adminToken = randomBytes(32).toString('hex');
     this.sessionSecret = randomBytes(32);
     this.server = null;
     this.port = null;
     this.activeRemoteSessionStarts = new Set();
+    this.pendingReplies = new Map();
+    this.unsubscribeEnvelopes = null;
+    this.unsubscribePeerEnvelopes = null;
   }
 
   sessionEnv(terminalUuid) {
@@ -136,7 +143,7 @@ class HeadlessSessionBridge {
     const token = crypto.createHmac('sha256', this.sessionSecret).update(terminalUuid).digest('hex');
     return {
       CODEAGENTSWARM_SESSION_COMMUNICATION_ENABLED: '1',
-      CODEAGENTSWARM_SESSION_COMMUNICATION_SEND_ENABLED: '0',
+      CODEAGENTSWARM_SESSION_COMMUNICATION_SEND_ENABLED: '1',
       CODEAGENTSWARM_SESSION_BRIDGE_PORT: String(this.port),
       CODEAGENTSWARM_SESSION_BRIDGE_TOKEN: token,
     };
@@ -159,6 +166,12 @@ class HeadlessSessionBridge {
     });
     this.server = server;
     this.port = server.address().port;
+    this.unsubscribeEnvelopes = this.remoteClient.subscribeEnvelopes((envelope) => {
+      if (envelope?.kind === 'coordination.message') void this._receiveResponse(envelope.message);
+    });
+    this.unsubscribePeerEnvelopes = this.peerRuntimeNetwork?.subscribeEnvelopes((_runtimeId, envelope) => {
+      if (envelope?.kind === 'coordination.message') void this._receiveResponse(envelope.message);
+    }) || null;
     fs.mkdirSync(this.dataPath, { recursive: true, mode: 0o700 });
     try {
       fs.writeFileSync(filePath, `${JSON.stringify({
@@ -169,6 +182,10 @@ class HeadlessSessionBridge {
       })}\n`, { mode: 0o600, flag: 'wx' });
       if (process.platform !== 'win32') fs.chmodSync(filePath, 0o600);
     } catch (error) {
+      this.unsubscribeEnvelopes?.();
+      this.unsubscribeEnvelopes = null;
+      this.unsubscribePeerEnvelopes?.();
+      this.unsubscribePeerEnvelopes = null;
       this.server = null;
       this.port = null;
       await new Promise((resolve) => server.close(resolve));
@@ -181,6 +198,11 @@ class HeadlessSessionBridge {
     const server = this.server;
     this.server = null;
     this.port = null;
+    this.unsubscribeEnvelopes?.();
+    this.unsubscribeEnvelopes = null;
+    this.unsubscribePeerEnvelopes?.();
+    this.unsubscribePeerEnvelopes = null;
+    this.pendingReplies.clear();
     if (server) await new Promise((resolve) => server.close(resolve));
     const filePath = controlPath(this.dataPath);
     try {
@@ -195,10 +217,103 @@ class HeadlessSessionBridge {
     ));
   }
 
-  async _remoteCommand(type, payload) {
-    const state = this.remoteClient.getState();
-    if (state.phase !== 'online' || !state.runtime?.id) throw new Error('The paired Mac is offline');
-    return this.remoteClient.sendCommand({
+  _sourceSession(sourceSessionId) {
+    return Array.from(this.runtime.sessions.values()).find((session) => (
+      session.terminalUuid === sourceSessionId && session.state !== 'stopped'
+    ));
+  }
+
+  _pruneReplies(now = Date.now()) {
+    for (const [requestId, pending] of this.pendingReplies) {
+      if (pending.expiresAt <= now) this.pendingReplies.delete(requestId);
+    }
+  }
+
+  _rememberReply(requestId, value) {
+    this._pruneReplies();
+    if (this.pendingReplies.size >= 256) this.pendingReplies.delete(this.pendingReplies.keys().next().value);
+    this.pendingReplies.set(requestId, { ...value, expiresAt: Date.now() + REPLY_TTL_MS });
+  }
+
+  async receiveRemoteMessage(payload, reply) {
+    if (!payload || typeof reply !== 'function') throw new Error('Session message details are invalid');
+    const target = this._sourceSession(payload.targetSessionId);
+    if (!target) throw new Error('The target session is unavailable');
+    this._pruneReplies();
+    if (this.pendingReplies.has(payload.communicationRequestId)) throw new Error('The session request is already active');
+    const replyRouteId = `${REMOTE_REPLY_PREFIX}${crypto.randomUUID()}`;
+    this._rememberReply(payload.communicationRequestId, {
+      direction: 'incoming',
+      sourceSessionId: replyRouteId,
+      targetSessionId: payload.targetSessionId,
+      remoteSourceSessionId: payload.sourceSessionId,
+      replyTargetSessionId: payload.replyTargetSessionId,
+      reply,
+    });
+    try {
+      return await this.deliverMessage({
+        targetSessionId: payload.targetSessionId,
+        sourceSessionId: replyRouteId,
+        sourceName: payload.sourceName,
+        sourceAgent: payload.sourceAgent,
+        message: payload.message,
+        messageType: 'request',
+        communicationRequestId: payload.communicationRequestId,
+      });
+    } catch (error) {
+      this.pendingReplies.delete(payload.communicationRequestId);
+      throw error;
+    }
+  }
+
+  async _receiveResponse(payload) {
+    if (!payload || payload.messageType !== 'response'
+      || typeof payload.message !== 'string' || !payload.message.trim() || payload.message.length > 12_000
+      || typeof payload.sourceSessionId !== 'string' || typeof payload.targetSessionId !== 'string'
+      || typeof payload.replyToRequestId !== 'string') return;
+    this._pruneReplies();
+    const pending = this.pendingReplies.get(payload.replyToRequestId);
+    if (!pending || pending.direction !== 'outgoing' || pending.responding
+      || pending.sourceSessionId !== payload.targetSessionId
+      || pending.targetSessionId !== payload.sourceSessionId) return;
+    pending.responding = true;
+    try {
+      await this.deliverMessage({
+        targetSessionId: payload.targetSessionId,
+        sourceSessionId: payload.sourceSessionId,
+        sourceName: payload.sourceName,
+        sourceAgent: payload.sourceAgent,
+        message: payload.message,
+        messageType: 'response',
+        replyToRequestId: payload.replyToRequestId,
+      });
+      this.pendingReplies.delete(payload.replyToRequestId);
+    } catch (_) {
+      pending.responding = false;
+    }
+  }
+
+  _remoteClients() {
+    const clients = [...(this.peerRuntimeNetwork?.getClients() || []), this.remoteClient];
+    const unique = new Map();
+    for (const client of clients) {
+      const state = client?.getState?.();
+      if (state?.phase === 'online' && state.runtime?.id && !unique.has(state.runtime.id)) {
+        unique.set(state.runtime.id, client);
+      }
+    }
+    return [...unique.values()];
+  }
+
+  _remoteClient(runtimeId) {
+    return this._remoteClients().find((client) => client.getState().runtime.id === runtimeId) || null;
+  }
+
+  async _remoteCommand(type, payload, runtimeId = null) {
+    const client = runtimeId ? this._remoteClient(runtimeId) : this._remoteClients()[0];
+    const state = client?.getState?.();
+    if (!client || state.phase !== 'online' || !state.runtime?.id) throw new Error('The paired host is offline');
+    return client.sendCommand({
       type,
       runtimeId: state.runtime.id,
       payload,
@@ -244,25 +359,26 @@ class HeadlessSessionBridge {
 
     if (request.method === 'GET' && url.pathname === '/session-communication/sessions') {
       try {
-        const state = this.remoteClient.getState();
-        const result = await this._remoteCommand('coordination.sessions', {});
-        const sessions = (Array.isArray(result?.sessions) ? result.sessions : []).slice(0, 100).flatMap((session) => (
-          session && typeof session.id === 'string' && session.id.length <= 128
-            ? [{
+        const results = await Promise.allSettled(this._remoteClients().map(async (client) => ({
+          state: client.getState(),
+          result: await client.sendCommand({
+            type: 'coordination.sessions',
+            runtimeId: client.getState().runtime.id,
+            payload: {},
+          }),
+        })));
+        const sessions = results.flatMap((entry) => entry.status === 'fulfilled' ? (({ state, result }) => (
+          (Array.isArray(result?.sessions) ? result.sessions : []).slice(0, 100).flatMap((session) => (
+            session && typeof session.id === 'string' && session.id.length <= 128 ? [{
               id: encodeRemoteSessionId(state.runtime.id, session.id),
-              name: clip(session.name, 120),
-              agent: clip(session.agent, 60),
-              project: clip(session.project, 160),
-              goal: clip(session.goal, 1200),
-              activity: clip(session.activity, 500),
-              status: clip(session.status, 80),
+              name: clip(session.name, 120), agent: clip(session.agent, 60), project: clip(session.project, 160),
+              goal: clip(session.goal, 1200), activity: clip(session.activity, 500), status: clip(session.status, 80),
               surface: session.surface === 'chat' ? 'chat' : 'terminal',
               state: ['working', 'needs_input'].includes(session.state) ? session.state : 'idle',
-              host: state.runtime.name || 'Paired Mac',
-              is_current: false,
-            }]
-            : []
-        ));
+              host: state.runtime.name || 'Paired host', is_current: false,
+            }] : []
+          ))
+        ))(entry.value) : []);
         return sendJson(response, 200, { sessions });
       } catch (_) {
         return sendJson(response, 503, { error: 'The paired Mac is offline' });
@@ -278,13 +394,14 @@ class HeadlessSessionBridge {
       let target;
       try { target = decodeRemoteSessionId(body.target_session_id); }
       catch (error) { return sendJson(response, 400, { error: error.message }); }
-      const state = this.remoteClient.getState();
-      if (target.runtimeId !== state.runtime?.id) return sendJson(response, 404, { error: 'The remote session is unavailable' });
+      const client = this._remoteClient(target.runtimeId);
+      const state = client?.getState();
+      if (!client) return sendJson(response, 404, { error: 'The remote session is unavailable' });
       try {
         const result = await this._remoteCommand('coordination.transcript', {
           targetSessionId: target.sessionId,
           limit,
-        });
+        }, target.runtimeId);
         const snapshot = boundedConversationMessages(result?.messages, { limit });
         return sendJson(response, 200, {
           session: {
@@ -302,9 +419,81 @@ class HeadlessSessionBridge {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/session-communication/messages') {
+      const body = await readJson(request);
+      const allowed = ['target_session_id', 'message', 'message_type', 'reply_to_request_id'];
+      const messageType = body.message_type === undefined ? 'request' : body.message_type;
+      if (Object.keys(body).some((key) => !allowed.includes(key))
+        || typeof body.target_session_id !== 'string' || !body.target_session_id || body.target_session_id.length > 512
+        || typeof body.message !== 'string' || !body.message.trim() || body.message.length > 12_000
+        || !['request', 'response'].includes(messageType)
+        || (messageType === 'response' && (typeof body.reply_to_request_id !== 'string' || !body.reply_to_request_id))
+        || (messageType === 'request' && body.reply_to_request_id !== undefined)) {
+        return sendJson(response, 400, { error: 'Session message details are invalid' });
+      }
+      this._pruneReplies();
+      if (messageType === 'response') {
+        const pending = this.pendingReplies.get(body.reply_to_request_id);
+        if (!pending || pending.direction !== 'incoming'
+          || pending.sourceSessionId !== body.target_session_id
+          || pending.targetSessionId !== sourceSessionId) {
+          return sendJson(response, 409, { error: 'The response does not match an active session request' });
+        }
+        const source = this._sourceSession(sourceSessionId);
+        if (!pending.reply({
+          sourceSessionId: pending.replyTargetSessionId,
+          targetSessionId: pending.remoteSourceSessionId,
+          sourceName: source?.title || `${source?.agent || 'CAS Cloud'} session`,
+          sourceAgent: source?.agent || source?.provider || 'agent',
+          message: body.message.trim(),
+          messageType: 'response',
+          replyToRequestId: body.reply_to_request_id,
+        })) return sendJson(response, 503, { error: 'The paired host is offline' });
+        this.pendingReplies.delete(body.reply_to_request_id);
+        return sendJson(response, 200, { success: true, status: 'delivered' });
+      }
+      let target;
+      try { target = decodeRemoteSessionId(body.target_session_id); }
+      catch (error) { return sendJson(response, 400, { error: error.message }); }
+      if (!this._remoteClient(target.runtimeId)) return sendJson(response, 404, { error: 'The remote session is unavailable' });
+      const source = this._sourceSession(sourceSessionId);
+      const communicationRequestId = crypto.randomUUID();
+      this._rememberReply(communicationRequestId, {
+        direction: 'outgoing',
+        sourceSessionId,
+        targetSessionId: body.target_session_id,
+      });
+      try {
+        const result = await this._remoteCommand('coordination.message', {
+          sourceSessionId,
+          targetSessionId: target.sessionId,
+          sourceName: source?.title || `${source?.agent || 'CAS Cloud'} session`,
+          sourceAgent: source?.agent || source?.provider || 'agent',
+          message: body.message.trim(),
+          communicationRequestId,
+          replyTargetSessionId: body.target_session_id,
+        }, target.runtimeId);
+        return sendJson(response, 200, {
+          success: true,
+          status: result?.status === 'delivered' ? 'delivered' : 'queued',
+          request_id: communicationRequestId,
+        });
+      } catch (_) {
+        this.pendingReplies.delete(communicationRequestId);
+        return sendJson(response, 503, { error: 'The paired Mac is offline' });
+      }
+    }
+
     if (request.method === 'GET' && url.pathname === '/session-communication/remote-projects') {
       try {
-        return sendJson(response, 200, listRemoteProjects(this.remoteClient));
+        const catalogs = this._remoteClients().map((client) => listRemoteProjects(client));
+        if (!catalogs.length) throw new Error('No connected hosts');
+        return sendJson(response, 200, {
+          host: catalogs.length === 1 ? catalogs[0].host : `${catalogs.length} connected hosts`,
+          agents: [...new Set(catalogs.flatMap((catalog) => catalog.agents))],
+          projects: catalogs.flatMap((catalog) => catalog.projects),
+          truncated: catalogs.some((catalog) => catalog.truncated),
+        });
       } catch (_) {
         return sendJson(response, 503, { error: 'The paired Mac is offline' });
       }
@@ -326,7 +515,10 @@ class HeadlessSessionBridge {
       }
       this.activeRemoteSessionStarts.add(sourceSessionId);
       try {
-        const result = await askRemoteProject(this.remoteClient, {
+        const target = parseRemoteResourceId('project', body.project_id);
+        const client = this._remoteClient(target.runtimeId);
+        if (!client) throw new Error('The paired host is offline');
+        const result = await askRemoteProject(client, {
           projectId: body.project_id,
           agent: body.agent,
           prompt: body.prompt,

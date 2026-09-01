@@ -8,6 +8,7 @@ const {
 } = require('./mobile-crypto');
 
 const PROTOCOL_VERSION = 2;
+const SESSION_SUBSCRIPTIONS_FEATURE = 'session-subscriptions';
 const MAX_PAIRING_INPUT_LENGTH = 8192;
 const MAX_RUNTIME_MESSAGE_BYTES = 1024 * 1024;
 const MAX_RESET_SNAPSHOT_BYTES = 256 * 1024;
@@ -32,6 +33,8 @@ const RUNTIME_KINDS = new Set([
   'command.accepted',
   'command.result',
   'command.completed',
+  'coordination.message',
+  'cursor.advanced',
 ]);
 const RELAY_KINDS = new Set([
   'pair.challenge',
@@ -44,6 +47,26 @@ const RELAY_KINDS = new Set([
   'runtime.message',
   'relay.error',
 ]);
+const RELAY_ERROR_CODES = new Set([
+  'hello_required',
+  'invalid_backend_origin',
+  'invalid_credential_renewal',
+  'invalid_device_token',
+  'invalid_json',
+  'invalid_peer_message',
+  'invalid_public_key',
+  'invalid_relay_ticket',
+  'invalid_runtime_message',
+  'message_too_large',
+  'mobile_token_expired',
+  'pairing_expired',
+  'rate_limited',
+  'runtime_not_authorized',
+  'runtime_reconnected',
+  'unsupported_message',
+  'unsupported_protocol',
+]);
+const CONNECTION_REF_PATTERN = /^[a-f0-9]{10}$/;
 const COMMAND_TYPES = new Set([
   'session.create',
   'turn.send',
@@ -51,11 +74,14 @@ const COMMAND_TYPES = new Set([
   'session.stop',
   'session.models',
   'session.configure',
+  'session.subscribe',
+  'session.unsubscribe',
   'request.respond',
   'question.respond',
   'history.list',
   'coordination.sessions',
   'coordination.transcript',
+  'coordination.message',
   'session.resume',
   'history.older',
   'projects.list',
@@ -84,7 +110,7 @@ const COMMAND_TYPES = new Set([
   'workspace.git.switch',
   'workspace.git.create',
 ]);
-const NON_REPLAYABLE_COMMANDS = new Set(['history.older', 'coordination.sessions', 'coordination.transcript', 'projects.list', 'tasks.list',
+const NON_REPLAYABLE_COMMANDS = new Set(['history.older', 'coordination.sessions', 'coordination.transcript', 'coordination.message', 'projects.list', 'tasks.list',
   'providers.list', 'provider.login.describe', 'provider.login.start', 'provider.login.submit', 'provider.login.cancel',
   'workspace.files.list', 'workspace.files.read', 'workspace.files.search',
   'workspace.git.status', 'workspace.git.diff', 'workspace.git.log', 'workspace.git.branches']);
@@ -461,6 +487,7 @@ class RemoteRuntimeClient {
     randomUUID = crypto.randomUUID,
     now = Date.now,
     deviceName = 'CodeAgentSwarm Desktop',
+    diagnostic = () => {},
     timeouts = {},
   } = {}) {
     if (!store) throw new Error('Remote runtime store is required');
@@ -471,6 +498,7 @@ class RemoteRuntimeClient {
     this.randomUUID = randomUUID;
     this.now = now;
     this.deviceName = deviceName;
+    this.reportDiagnostic = diagnostic;
     this.timeouts = {
       open: timeouts.open ?? 12_000,
       heartbeat: timeouts.heartbeat ?? 15_000,
@@ -512,6 +540,11 @@ class RemoteRuntimeClient {
     this.refreshTimer = null;
     this.renewTimer = null;
     this.refreshPromise = null;
+    this.connectTrace = null;
+    this.lastSocketError = null;
+    this.subscriptions = new Set();
+    this.subscriptionsSupported = false;
+    this.resyncPending = false;
   }
 
   subscribe(listener) {
@@ -536,6 +569,7 @@ class RemoteRuntimeClient {
     if (!this.enabled) return this.getState();
     this.identity = saved.device;
     this.connection = saved.connection;
+    this._diagnostic('remote.client_started', { savedConnection: Boolean(this.connection) });
     this._setState({
       ...this.state,
       phase: this.connection ? 'connecting' : 'unpaired',
@@ -559,6 +593,7 @@ class RemoteRuntimeClient {
       pending.reject(new Error('Remote runtime connection closed'));
     }
     this.pendingCommands.clear();
+    this._diagnostic('remote.client_stopped');
     this._setState({ ...this.state, phase: 'stopped', challenge: null });
   }
 
@@ -572,6 +607,7 @@ class RemoteRuntimeClient {
     this.pairing = pairing;
     this.pairingKeys = keys;
     this.runtimeOnline = false;
+    this._diagnostic('remote.pair_started');
     this._closeSocket();
     this._setState({
       ...this.state,
@@ -665,10 +701,17 @@ class RemoteRuntimeClient {
       resolve,
       reject,
       attempts: 0,
+      startedAt: this.now(),
+      acknowledgedAt: null,
       acknowledged: false,
       ackTimer: null,
       timer: setTimeout(() => {
         this.pendingCommands.delete(commandId);
+        this._diagnostic('remote.command_timeout', {
+          type: wireCommand.type,
+          attempts: pending.attempts,
+          totalMs: this.now() - pending.startedAt,
+        });
         reject(new Error('Remote runtime command timed out'));
       }, this.timeouts.command),
     };
@@ -679,6 +722,31 @@ class RemoteRuntimeClient {
       reject(new Error('Remote runtime is offline'));
     }
     return promise;
+  }
+
+  async subscribeSession(sessionId) {
+    if (!this.connection) return null;
+    const { sessionId: safeSessionId } = remoteSessionRef(this.connection.runtimeId, sessionId);
+    this.subscriptions.add(safeSessionId);
+    if (this.state.phase !== 'online' || !this.subscriptionsSupported) return null;
+    const result = await this.sendCommand({
+      type: 'session.subscribe',
+      runtimeId: this.connection.runtimeId,
+      sessionId: safeSessionId,
+    });
+    return clone(result?.session || null);
+  }
+
+  async unsubscribeSession(sessionId) {
+    if (!this.connection) return;
+    const { sessionId: safeSessionId } = remoteSessionRef(this.connection.runtimeId, sessionId);
+    this.subscriptions.delete(safeSessionId);
+    if (this.state.phase !== 'online' || !this.subscriptionsSupported) return;
+    await this.sendCommand({
+      type: 'session.unsubscribe',
+      runtimeId: this.connection.runtimeId,
+      sessionId: safeSessionId,
+    });
   }
 
   reconnectNow() {
@@ -709,6 +777,11 @@ class RemoteRuntimeClient {
   async _connect() {
     if (!this.enabled || this.socket || this.connecting || (!this.connection && !this.pairing)) return;
     this.connecting = true;
+    const mode = this.pairing ? 'pairing' : 'runtime';
+    const attempt = this.reconnectAttempt;
+    this.connectTrace = { startedAt: this.now(), openedAt: null, authenticatedAt: null, mode, attempt };
+    this.lastSocketError = null;
+    this._diagnostic('remote.relay_connecting', { mode, attempt });
     if (!this.pairing && this.connection.accessExpiresAt <= this.now()) {
       const refreshed = await this._refreshAccess();
       if (!refreshed) {
@@ -721,15 +794,34 @@ class RemoteRuntimeClient {
       this.connecting = false;
       return;
     }
-    const socket = new this.WebSocketImpl(relayWebSocketUrl(target.relayOrigin, target.runtimeId));
+    let socket;
+    try {
+      socket = new this.WebSocketImpl(relayWebSocketUrl(target.relayOrigin, target.runtimeId));
+    } catch (error) {
+      this.connecting = false;
+      this._diagnostic('remote.connect_failed', {
+        phase: 'socket',
+        code: typeof error?.code === 'string' ? error.code.slice(0, 40) : undefined,
+        totalMs: this.now() - this.connectTrace.startedAt,
+      });
+      this._setState({ ...this.state, phase: 'offline' });
+      if (this.connection) this._scheduleReconnect();
+      return;
+    }
     this.socket = socket;
     this.connecting = false;
     this._bind(socket, 'open', () => this._handleOpen(socket));
     this._bind(socket, 'message', (raw) => void this._handleRelayMessage(socket, raw?.data ?? raw));
-    this._bind(socket, 'close', () => this._handleClose(socket));
-    this._bind(socket, 'error', () => {});
+    this._bind(socket, 'close', (code) => this._handleClose(socket, code));
+    this._bind(socket, 'error', (error) => {
+      this.lastSocketError = typeof error?.code === 'string' ? error.code.slice(0, 40) : null;
+      this._diagnostic('remote.socket_error', { code: this.lastSocketError || undefined });
+    });
     this.openTimer = setTimeout(() => {
       if (this.socket !== socket) return;
+      this._diagnostic('remote.connect_failed', {
+        phase: 'socket', reason: 'timeout', totalMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
+      });
       this._handleClose(socket);
       try { socket.close(); } catch {}
     }, this.timeouts.open);
@@ -742,6 +834,11 @@ class RemoteRuntimeClient {
 
   _handleOpen(socket) {
     if (this.socket !== socket) return;
+    if (this.connectTrace) this.connectTrace.openedAt = this.now();
+    this._diagnostic('remote.relay_opened', {
+      mode: this.pairing ? 'pairing' : 'runtime',
+      socketMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
+    });
     if (this.pairing) {
       this._sendRelay({
         kind: 'hello.pair',
@@ -787,6 +884,12 @@ class RemoteRuntimeClient {
     if (message.kind === 'pair.challenge') return this._handlePairChallenge(message);
     if (message.kind === 'pair.completed') return this._handlePairCompleted(socket, message);
     if (message.kind === 'hello.accepted') {
+      if (this.connectTrace) this.connectTrace.authenticatedAt = this.now();
+      this._diagnostic('remote.relay_authenticated', {
+        mode: this.pairing ? 'pairing' : 'runtime',
+        totalMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
+        connection: CONNECTION_REF_PATTERN.test(message.connection || '') ? message.connection : undefined,
+      });
       this._scheduleRefresh();
       return;
     }
@@ -796,16 +899,23 @@ class RemoteRuntimeClient {
       }
       if (this.renewTimer) clearTimeout(this.renewTimer);
       this.renewTimer = null;
+      this._diagnostic('remote.credential_renewed');
       this._scheduleRefresh();
       return;
     }
     if (message.kind === 'runtime.online') {
       this.runtimeOnline = true;
+      this._diagnostic('remote.runtime_online', {
+        totalMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
+      });
       if (this.connection) this._sendRuntimeHello();
       return;
     }
     if (message.kind === 'runtime.offline') {
       this.runtimeOnline = false;
+      this.resyncPending = false;
+      this.subscriptionsSupported = false;
+      this._diagnostic('remote.runtime_offline');
       this._setState({ ...this.state, phase: 'offline', error: null });
       return;
     }
@@ -815,11 +925,22 @@ class RemoteRuntimeClient {
       try {
         envelope = decryptJson(message.box, this.connection.secretKey, this.connection.runtimePublicKey, message.codec);
       } catch {
+        this._diagnostic('remote.message_rejected', { reason: 'decrypt_failed' });
         return this._protocolFailure(socket);
+      }
+      if (envelope?.kind === 'welcome') {
+        this._diagnostic('remote.welcome_decrypted', {
+          bytes: Buffer.byteLength(JSON.stringify(message.box)),
+        });
       }
       return this._handleRuntimeEnvelope(envelope);
     }
     if (message.kind === 'relay.error' || message.kind === 'pair.rejected') {
+      this._diagnostic('remote.relay_rejected', {
+        code: RELAY_ERROR_CODES.has(message.code)
+          ? message.code
+          : message.kind === 'pair.rejected' ? 'pair_rejected' : 'unknown',
+      });
       const renewFallback = this.connection
         && this.renewTimer
         && (message.code === 'unsupported_message' || message.code === 'invalid_credential_renewal');
@@ -840,6 +961,7 @@ class RemoteRuntimeClient {
     if (message.desktopPublicKey !== this.pairing.runtimePublicKey) return this._protocolFailure(this.socket);
     const expiresAt = Number(message.expiresAt);
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= this.now()) return this._protocolFailure(this.socket);
+    this._diagnostic('remote.pair_challenge_received', { expiresInMs: expiresAt - this.now() });
     this._setState({
       ...this.state,
       phase: 'confirming',
@@ -891,6 +1013,9 @@ class RemoteRuntimeClient {
     this.connection = connection;
     this.pairing = null;
     this.pairingKeys = null;
+    this._diagnostic('remote.pair_completed', {
+      totalMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
+    });
     this._setState({
       phase: 'syncing',
       device: clone(this.identity),
@@ -907,8 +1032,9 @@ class RemoteRuntimeClient {
 
   _handleRuntimeEnvelope(envelope) {
     let safe;
+    let bytes;
     try {
-      const bytes = Buffer.byteLength(JSON.stringify(envelope));
+      bytes = Buffer.byteLength(JSON.stringify(envelope));
       if (!envelope || typeof envelope !== 'object' || bytes > MAX_RUNTIME_MESSAGE_BYTES || !RUNTIME_KINDS.has(envelope.kind)) {
         throw new Error('Invalid runtime envelope');
       }
@@ -920,6 +1046,7 @@ class RemoteRuntimeClient {
       }
       safe = stripPathFields(envelope);
     } catch {
+      this._diagnostic('remote.runtime_rejected', { reason: 'invalid_envelope' });
       return this._protocolFailure(this.socket);
     }
     if (safe.kind === 'command.accepted') {
@@ -930,12 +1057,20 @@ class RemoteRuntimeClient {
       this._resolveCommand(safe);
       return;
     }
+    if (safe.kind === 'coordination.message') {
+      this._emitEnvelope(safe);
+      return;
+    }
     if (safe.kind === 'welcome') {
       const eventRuntimeId = safe.runtimeId;
       const latestSeq = Number(safe.latestSeq);
       if (!ID_PATTERN.test(eventRuntimeId || '') || !Number.isSafeInteger(latestSeq) || latestSeq < 0) {
+        this._diagnostic('remote.runtime_rejected', { reason: 'invalid_welcome' });
         return this._protocolFailure(this.socket);
       }
+      this.resyncPending = false;
+      this.subscriptionsSupported = Array.isArray(safe.features)
+        && safe.features.includes(SESSION_SUBSCRIPTIONS_FEATURE);
       if (safe.reset === true) {
         this._setState({
           ...this.state,
@@ -952,12 +1087,21 @@ class RemoteRuntimeClient {
       } else {
         const cursor = this.state.cursor;
         if (!cursor || cursor.runtimeId !== eventRuntimeId || latestSeq < cursor.seq) {
-          this._sendRuntimeHello(false);
+          this._diagnostic('remote.runtime_resync', { reason: 'welcome_cursor_mismatch' });
+          this._requestRuntimeResync();
           return;
         }
         this._setState({ ...this.state, phase: 'online', lastEnvelope: safe, error: null });
       }
       this.reconnectAttempt = 0;
+      this._diagnostic('remote.runtime_synced', {
+        totalMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
+        reset: safe.reset === true,
+        bytes,
+        sessions: Array.isArray(safe.snapshot?.sessions) ? safe.snapshot.sessions.length : undefined,
+        projects: Array.isArray(safe.snapshot?.projects) ? safe.snapshot.projects.length : undefined,
+      });
+      this.connectTrace = null;
       this._emitEnvelope(safe);
       for (const pending of this.pendingCommands.values()) {
         if (pending.attempts > 0 && NON_REPLAYABLE_COMMANDS.has(pending.message.command.type)) {
@@ -970,12 +1114,20 @@ class RemoteRuntimeClient {
     }
     const seq = Number(safe.seq);
     const cursor = this.state.cursor;
+    const advancesCursor = safe.kind === 'cursor.advanced';
     if (!cursor
       || safe.runtimeId !== cursor.runtimeId
       || !Number.isSafeInteger(seq)
       || seq <= 0
-      || seq > cursor.seq + 1) {
-      this._sendRuntimeHello(false);
+      || (!advancesCursor && seq > cursor.seq + 1)) {
+      this._diagnostic('remote.runtime_resync', {
+        reason: !cursor ? 'missing_cursor'
+          : safe.runtimeId !== cursor.runtimeId ? 'runtime_changed'
+            : !Number.isSafeInteger(seq) || seq <= 0 ? 'invalid_sequence' : 'sequence_gap',
+        expectedSeq: cursor ? cursor.seq + 1 : undefined,
+        receivedSeq: Number.isSafeInteger(seq) ? seq : undefined,
+      });
+      this._requestRuntimeResync();
       return;
     }
     if (seq <= cursor.seq) return;
@@ -997,12 +1149,23 @@ class RemoteRuntimeClient {
   _sendRuntimeHello(withCursor = true) {
     const cursor = withCursor ? this.state.cursor : null;
     this._setState({ ...this.state, phase: 'syncing' });
-    this._sendRuntime({
+    const sent = this._sendRuntime({
       kind: 'hello',
       protocolVersion: PROTOCOL_VERSION,
       accepts: ['deflate'],
+      features: [SESSION_SUBSCRIPTIONS_FEATURE],
+      subscriptions: [...this.subscriptions],
       ...(cursor ? { cursor } : {}),
     });
+    this._diagnostic(sent ? 'remote.hello_sent' : 'remote.hello_send_failed', {
+      cursor: Boolean(cursor),
+    });
+  }
+
+  _requestRuntimeResync() {
+    if (this.resyncPending) return;
+    this.resyncPending = true;
+    this._sendRuntimeHello(false);
   }
 
   _sendRuntime(payload) {
@@ -1028,10 +1191,21 @@ class RemoteRuntimeClient {
     if (!this._sendRuntime(pending.message)) return false;
     pending.attempts += 1;
     pending.acknowledged = false;
+    this._diagnostic('remote.command_sent', {
+      type: pending.message.command.type,
+      attempt: pending.attempts,
+    });
     if (!NON_REPLAYABLE_COMMANDS.has(pending.message.command.type)) {
       pending.ackTimer = setTimeout(() => {
         pending.ackTimer = null;
-        if (this.pendingCommands.get(pending.commandId) === pending && !pending.acknowledged) this.reconnectNow();
+        if (this.pendingCommands.get(pending.commandId) === pending && !pending.acknowledged) {
+          this._diagnostic('remote.command_ack_timeout', {
+            type: pending.message.command.type,
+            attempts: pending.attempts,
+            totalMs: this.now() - pending.startedAt,
+          });
+          this.reconnectNow();
+        }
       }, this.timeouts.commandAck);
     }
     return true;
@@ -1041,8 +1215,14 @@ class RemoteRuntimeClient {
     const pending = this.pendingCommands.get(message.commandId);
     if (!pending) return;
     pending.acknowledged = true;
+    pending.acknowledgedAt ||= this.now();
     if (pending.ackTimer) clearTimeout(pending.ackTimer);
     pending.ackTimer = null;
+    this._diagnostic('remote.command_accepted', {
+      type: pending.message.command.type,
+      ackMs: pending.acknowledgedAt - pending.startedAt,
+      attempts: pending.attempts,
+    });
   }
 
   _resolveCommand(message) {
@@ -1051,6 +1231,13 @@ class RemoteRuntimeClient {
     clearTimeout(pending.timer);
     if (pending.ackTimer) clearTimeout(pending.ackTimer);
     this.pendingCommands.delete(message.commandId);
+    this._diagnostic('remote.command_completed', {
+      type: pending.message.command.type,
+      success: message.success === true,
+      totalMs: this.now() - pending.startedAt,
+      ackMs: pending.acknowledgedAt ? pending.acknowledgedAt - pending.startedAt : undefined,
+      attempts: pending.attempts,
+    });
     if (message.success === true) pending.resolve(clone(message.result));
     else {
       const error = new Error('Remote runtime command failed');
@@ -1068,10 +1255,20 @@ class RemoteRuntimeClient {
     pending.reject(new Error(message));
   }
 
-  _handleClose(socket) {
+  _handleClose(socket, closeCode) {
     if (this.socket !== socket) return;
+    const previousPhase = this.state.phase;
+    const trace = this.connectTrace;
     this._closeSocket(false);
     this.runtimeOnline = false;
+    this._diagnostic('remote.relay_closed', {
+      phase: previousPhase,
+      totalMs: trace ? this.now() - trace.startedAt : undefined,
+      code: Number.isInteger(closeCode) ? closeCode : undefined,
+      socketCode: this.lastSocketError || undefined,
+    });
+    this.connectTrace = null;
+    this.lastSocketError = null;
     if (!this.enabled) return;
     if (this.pairing) {
       this.pairing = null;
@@ -1085,10 +1282,11 @@ class RemoteRuntimeClient {
 
   _scheduleReconnect() {
     if (!this.enabled || !this.connection || this.reconnectTimer) return;
-    const attempt = this.reconnectAttempt++;
-    const delay = attempt === 0
+    const attempt = ++this.reconnectAttempt;
+    const delay = attempt === 1
       ? 0
-      : Math.min(this.timeouts.reconnectMax, this.timeouts.reconnectBase * (2 ** (attempt - 1)));
+      : Math.min(this.timeouts.reconnectMax, this.timeouts.reconnectBase * (2 ** (attempt - 2)));
+    this._diagnostic('remote.reconnect_scheduled', { attempt, delay });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this._connect();
@@ -1107,6 +1305,7 @@ class RemoteRuntimeClient {
       this.pongTimer = setTimeout(() => {
         this.pongTimer = null;
         if (this.socket === socket) {
+          this._diagnostic('remote.heartbeat_timeout');
           this._handleClose(socket);
           try { socket.close(); } catch {}
         }
@@ -1138,6 +1337,7 @@ class RemoteRuntimeClient {
     const connection = saved?.connection;
     if (!this.enabled || !connection) return false;
     this.connection = connection;
+    this._diagnostic('remote.credential_refresh_started');
     try {
       const response = await this.fetch(`${connection.backendOrigin}/api/mobile/refresh`, {
         method: 'POST',
@@ -1153,6 +1353,7 @@ class RemoteRuntimeClient {
         await this.store.clearConnection(connection.refreshToken);
         this.connection = null;
         this._closeSocket();
+        this._diagnostic('remote.credential_revoked');
         this._setState({ ...this.state, phase: 'unpaired', runtime: null, cursor: null, snapshot: null, error: 'Remote runtime authorization was revoked' });
         return false;
       }
@@ -1173,10 +1374,14 @@ class RemoteRuntimeClient {
       if (!this.enabled || this.connection.refreshToken !== connection.refreshToken) return false;
       await this.store.setConnection(refreshed);
       this.connection = refreshed;
+      this._diagnostic('remote.credential_refresh_completed');
       this._setState({ ...this.state, runtime: this._publicRuntime() });
       this._renewSocket(refreshed);
       return true;
     } catch {
+      this._diagnostic('remote.credential_refresh_failed', {
+        socketUsable: Boolean(this.connection && this.socket?.readyState === 1 && this.connection.accessExpiresAt > this.now()),
+      });
       if (this.connection && this.socket?.readyState === 1 && this.connection.accessExpiresAt > this.now()) {
         this._scheduleRefresh(this.timeouts.refreshRetry);
       } else {
@@ -1195,16 +1400,21 @@ class RemoteRuntimeClient {
       return;
     }
     const socket = this.socket;
+    this._diagnostic('remote.credential_renew_started');
     this._sendRelay({ kind: 'credential.renew', protocolVersion: PROTOCOL_VERSION, ticket: connection.deviceToken });
     if (this.renewTimer) clearTimeout(this.renewTimer);
     this.renewTimer = setTimeout(() => {
       this.renewTimer = null;
-      if (this.socket === socket && this.connection === connection) this.reconnectNow();
+      if (this.socket === socket && this.connection === connection) {
+        this._diagnostic('remote.credential_renew_timeout');
+        this.reconnectNow();
+      }
     }, this.timeouts.renew);
   }
 
   _protocolFailure(socket) {
     if (socket && this.socket !== socket) return;
+    this._diagnostic('remote.protocol_error', { phase: this.state.phase });
     this._closeSocket();
     this._setState({ ...this.state, phase: 'offline', error: 'Remote runtime sent an invalid message' });
     if (this.connection) this._scheduleReconnect();
@@ -1214,6 +1424,7 @@ class RemoteRuntimeClient {
     const pairingFailed = Boolean(this.pairing);
     this.pairing = null;
     this.pairingKeys = null;
+    this._diagnostic('remote.connection_failed', { pairing: pairingFailed });
     this._closeSocket();
     this._setState({ ...this.state, phase: this.connection ? 'offline' : 'unpaired', challenge: null, error: message });
     if (pairingFailed && this.connection) this._scheduleReconnect();
@@ -1228,6 +1439,8 @@ class RemoteRuntimeClient {
     this.heartbeatTimer = null;
     this.pongTimer = null;
     this.renewTimer = null;
+    this.resyncPending = false;
+    this.subscriptionsSupported = false;
     for (const pending of this.pendingCommands.values()) {
       if (pending.ackTimer) clearTimeout(pending.ackTimer);
       pending.ackTimer = null;
@@ -1254,6 +1467,14 @@ class RemoteRuntimeClient {
     this.state = clone(state);
     const publicState = this.getState();
     for (const listener of this.listeners) listener(publicState);
+  }
+
+  _diagnostic(event, details = {}) {
+    const entry = {
+      event,
+      ...Object.fromEntries(Object.entries(details).filter(([, value]) => value !== undefined)),
+    };
+    try { this.reportDiagnostic(entry); } catch (_) { /* diagnostics never affect the connection */ }
   }
 }
 

@@ -230,7 +230,7 @@ async function serve({ project: projectPaths = [], projectsRoot: projectRoots = 
     });
 
     host.relay.on('status', ({ status }) => console.log(`Relay: ${status}`));
-    host.relay.on('diagnostic', ({ event }) => console.log(`Relay diagnostic: ${event}`));
+    host.relay.on('diagnostic', (entry) => console.log(`[mobile-connect] ${JSON.stringify(entry)}`));
     host.relay.on('event', (event) => {
       void (async () => {
         if (event.kind === 'pair.scanned') {

@@ -29,6 +29,9 @@ const {
 } = require('../agent-drivers/chat-history-pagination');
 
 const PROTOCOL_VERSION = 2;
+const SESSION_SUBSCRIPTIONS_FEATURE = 'session-subscriptions';
+const SUBSCRIPTION_ONLY_EVENT_TYPES = new Set(['content.delta', 'item.updated', 'turn.diff.updated']);
+const STREAM_METRICS_INTERVAL_MS = 60_000;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_ITEMS_PER_SESSION = 500;
 const MAX_CONTENT_CHARS = 1024 * 1024;
@@ -88,6 +91,11 @@ function compactCommandError(error) {
     retryable: error?.retryable === true,
     ...(operationId ? { operationId } : {}),
   };
+}
+
+function isSubscriptionOnlyEnvelope(envelope) {
+  return envelope?.kind === 'session.event'
+    && SUBSCRIPTION_ONLY_EVENT_TYPES.has(envelope.event?.type);
 }
 
 function cleanProject(value) {
@@ -326,6 +334,8 @@ class MobileRuntime {
     getConversationContent = null,
     listCoordinatedSessions = null,
     readCoordinatedTranscript = null,
+    sendCoordinatedMessage = null,
+    replaceCoordinatedPeers = null,
     listTasks = null,
     createTask = null,
     updateTask = null,
@@ -347,6 +357,11 @@ class MobileRuntime {
     workspaceGitSwitch = null,
     workspaceGitCreate = null,
     listProjects = null,
+    listProjectDirectories = null,
+    createProject = null,
+    updateProject = null,
+    projectIconAvailability = null,
+    generateProjectIcon = null,
     registerProject = null,
     cloneProject = null,
     cancelProjectClone = null,
@@ -365,7 +380,8 @@ class MobileRuntime {
     restoreSession = null,
     notifyAttention = null,
     sendTurn = null,
-    onSessionsChanged = null
+    onSessionsChanged = null,
+    diagnostic = () => {}
   } = {}) {
     if (!manager) throw new Error('MobileRuntime requires a DriverChatManager');
     this.manager = manager;
@@ -387,6 +403,8 @@ class MobileRuntime {
     this.getConversationContent = getConversationContent;
     this.listCoordinatedSessions = listCoordinatedSessions;
     this.readCoordinatedTranscript = readCoordinatedTranscript;
+    this.sendCoordinatedMessage = sendCoordinatedMessage;
+    this.replaceCoordinatedPeers = replaceCoordinatedPeers;
     this.listTasks = listTasks;
     this.createTask = createTask;
     this.updateTask = updateTask;
@@ -408,6 +426,11 @@ class MobileRuntime {
     this.workspaceGitSwitch = workspaceGitSwitch;
     this.workspaceGitCreate = workspaceGitCreate;
     this.listProjects = listProjects;
+    this.listProjectDirectories = listProjectDirectories;
+    this.createProject = createProject;
+    this.updateProject = updateProject;
+    this.projectIconAvailability = projectIconAvailability;
+    this.generateProjectIcon = generateProjectIcon;
     this.registerProject = registerProject;
     this.cloneProject = cloneProject;
     this.cancelProjectClone = cancelProjectClone;
@@ -427,6 +450,7 @@ class MobileRuntime {
     this.notifyAttention = notifyAttention;
     this.sendTurn = sendTurn || ((sessionId, input) => this.manager.sendTurn(sessionId, input));
     this.onSessionsChanged = onSessionsChanged;
+    this.reportDiagnostic = diagnostic;
     this.sequence = 0;
     this.events = [];
     this.providerEventIds = new Set();
@@ -441,6 +465,24 @@ class MobileRuntime {
     this.mobileFiles = new Map();
     this.mobileFileDirectory = null;
     this.quotaFreshnessTimer = null;
+    this.streamMetricsTimer = null;
+    this.streamMetricsDirty = false;
+    this.streamMetrics = {
+      startedAt: Date.now(),
+      publishedEvents: 0,
+      highFrequencyPublished: 0,
+      highFrequencySent: 0,
+      highFrequencySkipped: 0,
+      cursorMarkersSent: 0,
+      outboundMessages: 0,
+      outboundBytes: 0,
+      helloMessages: 0,
+      resetWelcomes: 0,
+      replayWelcomes: 0,
+      subscribeCommands: 0,
+      unsubscribeCommands: 0,
+      hydrationSnapshots: 0,
+    };
     this.started = false;
     this._onSessionStarting = (session) => this._registerStartingSession(session);
     this._onSessionStarted = (session) => {
@@ -455,12 +497,20 @@ class MobileRuntime {
     this.manager.on(SESSION_STARTING, this._onSessionStarting);
     this.manager.on(SESSION_STARTED, this._onSessionStarted);
     this.manager.on(SESSION_EVENT, this._onSessionEvent);
+    this.streamMetricsTimer = setInterval(
+      () => this._emitStreamMetrics('interval'),
+      STREAM_METRICS_INTERVAL_MS,
+    );
+    this.streamMetricsTimer.unref?.();
   }
 
   stop() {
     clearTimeout(this.quotaFreshnessTimer);
     this.quotaFreshnessTimer = null;
+    clearInterval(this.streamMetricsTimer);
+    this.streamMetricsTimer = null;
     if (!this.started) return;
+    this._emitStreamMetrics('stop');
     this.started = false;
     this.manager.removeListener(SESSION_STARTING, this._onSessionStarting);
     this.manager.removeListener(SESSION_STARTED, this._onSessionStarted);
@@ -494,6 +544,9 @@ class MobileRuntime {
     const client = {
       socket,
       ready: false,
+      selective: false,
+      subscriptions: new Set(),
+      skippedSeq: 0,
       detach: null
     };
     const onMessage = (raw) => this._handleMessage(client, raw);
@@ -502,6 +555,7 @@ class MobileRuntime {
       socket.removeListener('message', onMessage);
       socket.removeListener('close', onClose);
       socket.removeListener('error', onClose);
+      if (this.clients.has(client) && this.started) this._emitStreamMetrics('client_detached');
       this.clients.delete(client);
     };
     socket.on('message', onMessage);
@@ -509,6 +563,84 @@ class MobileRuntime {
     socket.on('error', onClose);
     this.clients.add(client);
     return client.detach;
+  }
+
+  _snapshotSession(session) {
+    return {
+      sessionId: session.sessionId,
+      clientRequestId: session.clientRequestId,
+      agent: session.agent,
+      provider: session.provider,
+      accountId: session.accountId,
+      accountLabel: session.accountLabel,
+      threadId: session.threadId,
+      terminalUuid: session.terminalUuid,
+      terminalOrder: session.terminalOrder,
+      cwd: session.cwd,
+      model: session.model,
+      effort: session.effort,
+      serviceTier: session.serviceTier,
+      permissionMode: session.permissionMode,
+      interactionMode: session.interactionMode,
+      title: session.title,
+      goal: session.goal,
+      activity: session.activity,
+      activityHistory: session.activityHistory,
+      workStatus: session.workStatus,
+      lastActivityAt: session.lastActivityAt,
+      needsAttention: session.needsAttention,
+      attentionVersion: session.attentionVersion,
+      minimized: session.minimized,
+      sandboxMode: session.sandboxMode === true,
+      resumed: session.resumed === true,
+      hasEarlierHistory: session.resumed === true || session.historyTruncated === true,
+      project: session.project,
+      state: session.state,
+      currentTurn: session.currentTurn,
+      tokenUsage: session.tokenUsage,
+      // Mobile does not render the unified diff. Live events can still update it, but
+      // carrying every terminal diff in a cold snapshot only delays reconnection.
+      diff: null,
+      items: Array.from(session.items.values()),
+      pendingRequests: Array.from(session.pendingRequests.values()),
+      pendingQuestions: Array.from(session.pendingQuestions.values()),
+      lastSeq: session.lastSeq
+    };
+  }
+
+  _subscriptionSnapshot(session) {
+    const snapshot = this._snapshotSession(session);
+    if (jsonBytes(snapshot) <= MAX_SNAPSHOT_BYTES) return snapshot;
+
+    const compact = {
+      ...snapshot,
+      activityHistory: [],
+      diff: null,
+      items: [],
+      hasEarlierHistory: snapshot.hasEarlierHistory || snapshot.items.some(isConversationItem),
+    };
+    let used = jsonBytes(compact);
+    const candidates = snapshot.items.map((item, sourceIndex) => ({
+      item: compactSnapshotItem(item),
+      sourceIndex,
+    }));
+    const selected = [];
+    for (const tier of [
+      candidates.filter(({ item }) => isConversationItem(item)),
+      candidates.filter(({ item }) => !isConversationItem(item)),
+    ]) {
+      for (let index = tier.length - 1; index >= 0; index -= 1) {
+        const candidate = tier[index];
+        const bytes = jsonBytes(candidate.item) + 1;
+        if (used + bytes > MAX_SNAPSHOT_BYTES) continue;
+        selected.push(candidate);
+        used += bytes;
+      }
+    }
+    compact.items = selected
+      .sort((left, right) => left.sourceIndex - right.sourceIndex)
+      .map(({ item }) => item);
+    return compact;
   }
 
   snapshot() {
@@ -530,46 +662,7 @@ class MobileRuntime {
       projectsTruncated: allProjects.length > projects.length,
       quotas: compactQuotaSnapshots(this.getQuota(), this.getProviderAccounts()),
       terminalStatuses: compactTerminalStatuses(this.getTerminalStatuses()),
-      sessions: Array.from(this.sessions.values(), (session) => ({
-        sessionId: session.sessionId,
-        clientRequestId: session.clientRequestId,
-        agent: session.agent,
-        provider: session.provider,
-        accountId: session.accountId,
-        accountLabel: session.accountLabel,
-        threadId: session.threadId,
-        terminalUuid: session.terminalUuid,
-        terminalOrder: session.terminalOrder,
-        cwd: session.cwd,
-        model: session.model,
-        effort: session.effort,
-        serviceTier: session.serviceTier,
-        permissionMode: session.permissionMode,
-        interactionMode: session.interactionMode,
-        title: session.title,
-        goal: session.goal,
-        activity: session.activity,
-        activityHistory: session.activityHistory,
-        workStatus: session.workStatus,
-        lastActivityAt: session.lastActivityAt,
-        needsAttention: session.needsAttention,
-        attentionVersion: session.attentionVersion,
-        minimized: session.minimized,
-        sandboxMode: session.sandboxMode === true,
-        resumed: session.resumed === true,
-        hasEarlierHistory: session.resumed === true || session.historyTruncated === true,
-        project: session.project,
-        state: session.state,
-        currentTurn: session.currentTurn,
-        tokenUsage: session.tokenUsage,
-        // Mobile does not render the unified diff. Live events can still update it, but
-        // carrying every terminal diff in a cold snapshot only delays reconnection.
-        diff: null,
-        items: Array.from(session.items.values()),
-        pendingRequests: Array.from(session.pendingRequests.values()),
-        pendingQuestions: Array.from(session.pendingQuestions.values()),
-        lastSeq: session.lastSeq
-      }))
+      sessions: Array.from(this.sessions.values(), (session) => this._snapshotSession(session))
     };
     if (jsonBytes(snapshot) <= MAX_SNAPSHOT_BYTES) return snapshot;
 
@@ -644,9 +737,12 @@ class MobileRuntime {
     return rows.flatMap((project) => {
       if (!project || typeof project.path !== 'string' || !project.path || seen.has(project.path)) return [];
       seen.add(project.path);
+      const projectId = cleanText(project.projectId, 128)
+        || (Number.isSafeInteger(project.id) && project.id > 0 ? String(project.id) : null);
       return [{
         path: project.path,
-        ...(typeof project.projectId === 'string' ? { projectId: cleanText(project.projectId, 128) } : {}),
+        ...(projectId ? { projectId } : {}),
+        ...(typeof project.rootId === 'string' && project.rootId ? { rootId: project.rootId } : {}),
         name: typeof project.display_name === 'string' && project.display_name
           ? project.display_name
           : (typeof project.name === 'string' && project.name) || path.basename(project.path),
@@ -824,6 +920,17 @@ class MobileRuntime {
     return this._publish('tasks.changed', {
       projectId: cleanText(projectId, 128),
       revision: Number.isSafeInteger(revision) && revision >= 0 ? revision : 0
+    });
+  }
+
+  publishProjectIconEvent(event = {}) {
+    return this._publish('project.icon.generated', {
+      jobId: cleanText(event.jobId, 100),
+      projectId: cleanText(event.projectId, 128),
+      success: event.success === true,
+      applied: event.applied === true,
+      unavailable: event.unavailable === true,
+      ...(cleanText(event.error, 500) ? { error: cleanText(event.error, 500) } : {}),
     });
   }
 
@@ -1014,6 +1121,11 @@ class MobileRuntime {
     // owner. Creating sessions from them leaves anonymous error cards behind.
     if (!this.sessions.has(sessionId)) return;
     if (!event || !isProviderEventType(event.type)) return;
+    if (
+      event.visibility === 'internal'
+      && !['request.opened', 'request.updated', 'request.closed', 'question.opened',
+        'question.updated', 'question.closed', 'runtime.error', 'session.exited'].includes(event.type)
+    ) return;
     if (event.eventId && this.providerEventIds.has(event.eventId)) return;
     const compact = this._compactProviderEvent(sessionId, event);
     if (!compact || typeof sessionId !== 'string') return;
@@ -1210,6 +1322,9 @@ class MobileRuntime {
       createdAt: new Date().toISOString(),
       ...payload
     };
+    this.streamMetrics.publishedEvents += 1;
+    if (isSubscriptionOnlyEnvelope(envelope)) this.streamMetrics.highFrequencyPublished += 1;
+    this.streamMetricsDirty = true;
     this.events.push(envelope);
     while (this.events.length > this.replayLimit) {
       const removed = this.events.shift();
@@ -1218,9 +1333,40 @@ class MobileRuntime {
       }
     }
     for (const client of this.clients) {
-      if (client.ready) this._send(client, envelope);
+      if (client.ready) this._sendStreamEnvelope(client, envelope);
     }
     return envelope;
+  }
+
+  _sendStreamEnvelope(client, envelope) {
+    const highFrequency = isSubscriptionOnlyEnvelope(envelope);
+    const subscribed = !highFrequency
+      || client.subscriptions.has(envelope.sessionId);
+    if (client.selective && !subscribed) {
+      client.skippedSeq = envelope.seq;
+      this.streamMetrics.highFrequencySkipped += 1;
+      this.streamMetricsDirty = true;
+      return true;
+    }
+    if (!this._flushSkippedSeq(client)) return false;
+    const sent = this._send(client, envelope);
+    if (sent && highFrequency) this.streamMetrics.highFrequencySent += 1;
+    return sent;
+  }
+
+  _flushSkippedSeq(client) {
+    if (!client.skippedSeq) return true;
+    const sent = this._send(client, {
+      kind: 'cursor.advanced',
+      protocolVersion: PROTOCOL_VERSION,
+      runtimeId: this.runtimeId,
+      seq: client.skippedSeq,
+    });
+    if (sent) {
+      client.skippedSeq = 0;
+      this.streamMetrics.cursorMarkersSent += 1;
+    }
+    return sent;
   }
 
   _session(sessionId, patch = {}) {
@@ -1387,6 +1533,16 @@ class MobileRuntime {
       this._sendProtocolError(client, 'unsupported_protocol', `Protocol ${PROTOCOL_VERSION} is required`);
       return;
     }
+    client.selective = Array.isArray(message.features)
+      && message.features.slice(0, 20).includes(SESSION_SUBSCRIPTIONS_FEATURE);
+    client.subscriptions = new Set(client.selective && Array.isArray(message.subscriptions)
+      ? message.subscriptions.slice(0, 20).filter((sessionId) => (
+          typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 128
+        ))
+      : []);
+    client.skippedSeq = 0;
+    this.streamMetrics.helloMessages += 1;
+    this.streamMetricsDirty = true;
     const cursor = message.cursor;
     const oldestSeq = this.events.length ? this.events[0].seq : this.sequence + 1;
     const replayable = this.sequence > 0
@@ -1401,20 +1557,23 @@ class MobileRuntime {
       runtimeId: this.runtimeId,
       latestSeq: this.sequence,
       reset: !replayable,
+      features: client.selective ? [SESSION_SUBSCRIPTIONS_FEATURE] : [],
       desktop: this.getClientMetadata(),
       capabilities: (this.getCapabilities() || []).slice(0, 50).flatMap((capability) => (
         typeof capability === 'string' && capability.length <= 100 ? [capability] : []
       )),
       ...(!replayable ? { snapshot: this.snapshot() } : {})
     };
+    this.streamMetrics[replayable ? 'replayWelcomes' : 'resetWelcomes'] += 1;
     // How long the desktop itself took to answer, so the mobile reconnect timeline can
     // separate desktop work (mostly building the snapshot) from transport time.
     welcome.builtMs = Math.max(0, Math.round(Date.now() - helloReceivedAt));
     this._send(client, welcome);
     if (replayable) {
       for (const event of this.events) {
-        if (event.seq > cursor.seq) this._send(client, event);
+        if (event.seq > cursor.seq) this._sendStreamEnvelope(client, event);
       }
+      this._flushSkippedSeq(client);
     }
     client.ready = true;
     if (!replayable && welcome.snapshot?.truncated) this.publishProjects();
@@ -1426,9 +1585,10 @@ class MobileRuntime {
       this._sendProtocolError(client, 'invalid_command_id', 'commandId must be 1-128 characters');
       return;
     }
-    // Attachment chunks and requested transcript pages already have their own
-    // bounds. Their payloads must not also enter command history or replay.
-    const directResult = ['attachment.read', 'history.older', 'tasks.list', 'projects.list',
+    // Attachment chunks and private requested reads already have their own bounds.
+    // Their payloads must not also enter command history or replay.
+    const directResult = ['attachment.read', 'history.older', 'session.subscribe', 'session.unsubscribe', 'coordination.sessions', 'coordination.transcript', 'coordination.message', 'coordination.peers.replace',
+      'tasks.list', 'projects.list', 'project.directories.list',
       'providers.list', 'provider.login.describe',
       'workspace.files.list', 'workspace.files.read', 'workspace.files.search',
       'workspace.git.status', 'workspace.git.diff', 'workspace.git.log', 'workspace.git.branches'].includes(message.command?.type);
@@ -1445,7 +1605,17 @@ class MobileRuntime {
     if (record) this.commands.set(commandId, record);
     this._send(client, { kind: 'command.accepted', commandId, duplicate: false });
     Promise.resolve()
-      .then(() => this._executeCommand(message.command, { commandId }))
+      .then(() => this._executeCommand(message.command, {
+        commandId,
+        client,
+        deviceId: client.socket?.device?.id,
+        reply: (payload) => this._send(client, {
+          kind: 'coordination.message',
+          protocolVersion: PROTOCOL_VERSION,
+          runtimeId: this.runtimeId,
+          message: payload,
+        }),
+      }))
       .then(
         (result) => ({ success: true, result }),
         (error) => ({ success: false, error: compactCommandError(error) })
@@ -1489,6 +1659,36 @@ class MobileRuntime {
       if (unexpected) throw new Error(`Unexpected project field: ${unexpected}`);
     };
     const mutationRequestId = () => payload.requestId || context.commandId;
+    if (command.type === 'session.subscribe' || command.type === 'session.unsubscribe') {
+      exactPayload([]);
+      if (!context.client?.selective) throw new Error('Session subscriptions were not negotiated');
+      const session = typeof sessionId === 'string' ? this.sessions.get(sessionId) : null;
+      if (!session) throw new Error('The agent is no longer open');
+      if (command.type === 'session.unsubscribe') {
+        context.client.subscriptions.delete(sessionId);
+        this.streamMetrics.unsubscribeCommands += 1;
+        this.streamMetricsDirty = true;
+        return { subscribed: false };
+      }
+      if (!this._flushSkippedSeq(context.client)) {
+        throw new Error('The session cursor could not be synchronized');
+      }
+      context.client.subscriptions.add(sessionId);
+      this.streamMetrics.subscribeCommands += 1;
+      this.streamMetrics.hydrationSnapshots += 1;
+      this.streamMetricsDirty = true;
+      return {
+        subscribed: true,
+        session: this._subscriptionSnapshot(session),
+      };
+    }
+    if (command.type === 'coordination.peers.replace') {
+      if (typeof this.replaceCoordinatedPeers !== 'function' || typeof context.deviceId !== 'string') {
+        throw new Error('Private device groups are unavailable');
+      }
+      exactPayload(['peers']);
+      return this.replaceCoordinatedPeers(context.deviceId, payload.peers);
+    }
     if (command.type === 'coordination.sessions') {
       if (typeof this.listCoordinatedSessions !== 'function') throw new Error('Session discovery is unavailable');
       exactPayload([]);
@@ -1505,10 +1705,77 @@ class MobileRuntime {
       }
       return this.readCoordinatedTranscript({ targetSessionId, limit });
     }
+    if (command.type === 'coordination.message') {
+      if (typeof this.sendCoordinatedMessage !== 'function') throw new Error('Session messaging is unavailable');
+      exactPayload(['sourceSessionId', 'targetSessionId', 'sourceName', 'sourceAgent', 'message', 'communicationRequestId', 'replyTargetSessionId']);
+      if (typeof payload.sourceSessionId !== 'string' || !payload.sourceSessionId.trim() || payload.sourceSessionId.length > 128
+        || typeof payload.targetSessionId !== 'string' || !payload.targetSessionId.trim() || payload.targetSessionId.length > 128
+        || typeof payload.message !== 'string' || !payload.message.trim() || payload.message.length > 12_000
+        || typeof payload.communicationRequestId !== 'string' || !payload.communicationRequestId.trim() || payload.communicationRequestId.length > 128
+        || typeof payload.replyTargetSessionId !== 'string' || !payload.replyTargetSessionId.trim() || payload.replyTargetSessionId.length > 512) {
+        throw new Error('Session message details are invalid');
+      }
+      const sourceSessionId = cleanText(payload.sourceSessionId, 128);
+      const targetSessionId = cleanText(payload.targetSessionId, 128);
+      const sourceName = cleanText(payload.sourceName, 120);
+      const sourceAgent = cleanText(payload.sourceAgent, 60);
+      const message = cleanText(payload.message, 12_000);
+      const communicationRequestId = cleanText(payload.communicationRequestId, 128);
+      const replyTargetSessionId = cleanText(payload.replyTargetSessionId, 512);
+      if (!sourceSessionId || !targetSessionId || !message || !communicationRequestId || !replyTargetSessionId) {
+        throw new Error('Session message details are invalid');
+      }
+      return this.sendCoordinatedMessage({
+        sourceSessionId,
+        targetSessionId,
+        sourceName,
+        sourceAgent,
+        message,
+        communicationRequestId,
+        replyTargetSessionId,
+      }, context.reply);
+    }
     if (command.type === 'projects.list') {
       if (typeof this.listProjects !== 'function') throw new Error('Remote projects are unavailable');
       exactPayload(['cursor', 'limit']);
       return this.listProjects({ cursor: payload.cursor, limit: payload.limit });
+    }
+    if (command.type === 'project.directories.list') {
+      if (typeof this.listProjectDirectories !== 'function') throw new Error('Remote folder browsing is unavailable');
+      exactPayload(['directoryPath', 'rootId', 'relativePath']);
+      return this.listProjectDirectories({
+        directoryPath: payload.directoryPath,
+        rootId: payload.rootId,
+        relativePath: payload.relativePath,
+      });
+    }
+    if (command.type === 'project.create') {
+      if (typeof this.createProject !== 'function') throw new Error('Remote project creation is unavailable');
+      exactPayload(['name', 'projectPath', 'color', 'icon', 'requestId']);
+      const result = await this.createProject({ ...payload, requestId: mutationRequestId() });
+      this.publishProjects();
+      return result;
+    }
+    if (command.type === 'project.update') {
+      if (typeof this.updateProject !== 'function') throw new Error('Remote project editing is unavailable');
+      exactPayload(['projectId', 'displayName', 'projectPath', 'color', 'icon', 'requestId']);
+      const result = await this.updateProject({ ...payload, requestId: mutationRequestId() });
+      this.publishProjects();
+      return result;
+    }
+    if (command.type === 'project.icon.availability') {
+      if (typeof this.projectIconAvailability !== 'function') return { available: false };
+      exactPayload([]);
+      return this.projectIconAvailability();
+    }
+    if (command.type === 'project.icon.generate') {
+      if (typeof this.generateProjectIcon !== 'function') throw new Error('Codex icon generation is unavailable');
+      exactPayload(['projectId', 'description', 'jobId']);
+      const projectId = cleanText(payload.projectId, 128);
+      const description = cleanText(payload.description, 1000);
+      const jobId = cleanText(payload.jobId, 100);
+      if (!projectId || !description || !jobId || !/^[A-Za-z0-9_-]+$/.test(jobId)) throw new Error('Project icon request is invalid');
+      return this.generateProjectIcon({ projectId, description, jobId });
     }
     if (command.type === 'project.register') {
       if (typeof this.registerProject !== 'function') throw new Error('Remote project registration is unavailable');
@@ -1529,7 +1796,9 @@ class MobileRuntime {
     if (command.type === 'project.unregister') {
       if (typeof this.unregisterProject !== 'function') throw new Error('Remote project removal is unavailable');
       exactPayload(['projectId', 'requestId']);
-      return this.unregisterProject({ projectId: payload.projectId, requestId: mutationRequestId() });
+      const result = await this.unregisterProject({ projectId: payload.projectId, requestId: mutationRequestId() });
+      this.publishProjects();
+      return result;
     }
     if (command.type === 'shortcuts.replace') {
       if (typeof this.replaceShortcuts !== 'function') throw new Error('Remote shortcut management is unavailable');
@@ -1576,7 +1845,7 @@ class MobileRuntime {
     }
     if (command.type === 'task.create') {
       if (typeof this.createTask !== 'function') throw new Error('Remote task creation is unavailable');
-      exactPayload(['projectId', 'title', 'description', 'parentTaskId', 'labels', 'requestId']);
+      exactPayload(['projectId', 'title', 'description', 'parentTaskId', 'labels', 'status', 'plan', 'implementation', 'requestId']);
       return this.createTask({ ...payload, requestId: mutationRequestId() });
     }
     if (command.type === 'task.update') {
@@ -2247,12 +2516,58 @@ class MobileRuntime {
   _send(client, message) {
     if (client.socket.readyState !== undefined && client.socket.readyState !== 1) return false;
     try {
-      client.socket.send(JSON.stringify(message));
+      const serialized = JSON.stringify(message);
+      client.socket.send(serialized);
+      this.streamMetrics.outboundMessages += 1;
+      this.streamMetrics.outboundBytes += Buffer.byteLength(serialized);
+      this.streamMetricsDirty = true;
       return true;
     } catch (_) {
       client.detach();
       return false;
     }
+  }
+
+  _emitStreamMetrics(reason) {
+    if (!this.streamMetricsDirty) return;
+    const clients = Array.from(this.clients).filter((client) => client.ready);
+    const selectiveClients = clients.filter((client) => client.selective);
+    const savedMessages = Math.max(
+      0,
+      this.streamMetrics.highFrequencySkipped - this.streamMetrics.cursorMarkersSent,
+    );
+    const baselineMessages = this.streamMetrics.outboundMessages + savedMessages;
+    this._diagnostic('runtime.stream_metrics', {
+      metricsVersion: 1,
+      reason,
+      uptimeMs: Math.max(0, Date.now() - this.streamMetrics.startedAt),
+      clients: clients.length,
+      selectiveClients: selectiveClients.length,
+      legacyClients: clients.length - selectiveClients.length,
+      activeSubscriptions: selectiveClients.reduce((sum, client) => sum + client.subscriptions.size, 0),
+      publishedEvents: this.streamMetrics.publishedEvents,
+      highFrequencyPublished: this.streamMetrics.highFrequencyPublished,
+      highFrequencySent: this.streamMetrics.highFrequencySent,
+      highFrequencySkipped: this.streamMetrics.highFrequencySkipped,
+      cursorMarkersSent: this.streamMetrics.cursorMarkersSent,
+      outboundMessages: this.streamMetrics.outboundMessages,
+      outboundBytes: this.streamMetrics.outboundBytes,
+      estimatedRelayMessagesSaved: savedMessages,
+      estimatedRelayReductionPct: baselineMessages
+        ? Number(((savedMessages / baselineMessages) * 100).toFixed(1))
+        : 0,
+      helloMessages: this.streamMetrics.helloMessages,
+      resetWelcomes: this.streamMetrics.resetWelcomes,
+      replayWelcomes: this.streamMetrics.replayWelcomes,
+      subscribeCommands: this.streamMetrics.subscribeCommands,
+      unsubscribeCommands: this.streamMetrics.unsubscribeCommands,
+      hydrationSnapshots: this.streamMetrics.hydrationSnapshots,
+    });
+    this.streamMetricsDirty = false;
+  }
+
+  _diagnostic(event, details = {}) {
+    try { this.reportDiagnostic({ event, ...details }); } catch (_) { /* diagnostics never affect Chat */ }
   }
 }
 

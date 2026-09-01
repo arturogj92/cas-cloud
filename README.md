@@ -39,9 +39,9 @@ opaque project and start one new Mac session with a prompt when you explicitly
 ask. Only assistant prose returns; paths, reasoning and tool output do not.
 
 Desktop's ordinary CAS Cloud pairing provides the reverse direction. With both
-links approved, a Mac session can perform the same explicit read or remote start
-on CAS Cloud. Direct message injection into an existing cross-host session stays
-disabled.
+links approved, a Mac session can perform the same explicit read, remote start,
+or focused request/response exchange with an eligible CAS Cloud session. Those
+messages stay end-to-end encrypted and are not retained for replay by the relay.
 
 Except for components identified in `THIRD_PARTY_NOTICES.md`, this is
 source-available software under the PolyForm Noncommercial License 1.0.0, not
@@ -153,6 +153,11 @@ and it strips secret-like variables before invoking npm. If the runtime sets
 times out after ten minutes by default; systemd leaves the bounded health check
 and rollback in control instead of killing the updater mid-switch.
 
+An operator deploying an unpublished local tarball without changing its package
+version can set `CAS_CLI_REINSTALL_SAME_VERSION=1` for that one update command.
+The updater accepts only an absolute local file in this mode, keys the release by
+its SHA-256 digest, and keeps the same idle guard, health check and rollback.
+
 ### One-time migration from `codeagentswarm`
 
 The updater bundled with legacy `codeagentswarm@2.4.0` cannot recognize a scoped
@@ -161,8 +166,8 @@ new updater once through `npx` from the same environment as the updater service:
 
 ```sh
 CAS_CLI_INSTALL_ROOT="$HOME/.local/share/codeagentswarm-cloud" \
-CAS_CLI_UPDATE_SPEC="@codeagentswarm/cas-cloud@0.0.2" \
-npx --yes "@codeagentswarm/cas-cloud@0.0.2" update
+CAS_CLI_UPDATE_SPEC="@codeagentswarm/cas-cloud@0.0.3" \
+npx --yes "@codeagentswarm/cas-cloud@0.0.3" update
 ```
 
 Carry over any non-secret `CAS_CLI_STATE`, `CAS_CLI_SYSTEMD_SCOPE` and

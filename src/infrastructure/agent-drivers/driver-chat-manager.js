@@ -97,6 +97,9 @@ class DriverChatManager extends EventEmitter {
    * @param {(context: { agent: string, terminalId?: number }) => (Object|Promise<Object>)}
    *        [options.resolveDriverOptions] Resolves provider launch options such
    *        as the custom CLI binary configured in Settings.
+   * @param {(context: { sessionId: string, agent: string, terminalId: number,
+   *   cwd: string|null, unifiedDiff: string }) => void} [options.onSessionDiff]
+   *        Receives canonical cumulative diffs with their owning terminal.
    * @param {(agent: string, sessionId: string) => (string|null|Promise<string|null>)}
    *        [options.resolveResumeCwd] Directory a conversation was recorded in.
    * @param {(context: Object) => (Object|Promise<Object>)} [options.resolveWorkingDir]
@@ -108,6 +111,7 @@ class DriverChatManager extends EventEmitter {
     createDriver,
     resolveSpawnEnv,
     resolveDriverOptions,
+    onSessionDiff,
     resolveResumeCwd,
     resolveWorkingDir,
     isWorkingDirReserved
@@ -116,10 +120,11 @@ class DriverChatManager extends EventEmitter {
     this._createDriver = createDriver || defaultCreateDriver;
     this._resolveSpawnEnv = resolveSpawnEnv || (async () => ({}));
     this._resolveDriverOptions = resolveDriverOptions || (async () => ({}));
+    this._onSessionDiff = typeof onSessionDiff === 'function' ? onSessionDiff : null;
     this._resolveResumeCwd = resolveResumeCwd || (() => null);
     this._resolveWorkingDir = resolveWorkingDir || null;
     this._isWorkingDirReserved = isWorkingDirReserved || (() => false);
-    /** @type {Map<string, { driver: Object, agent: string, cwd: string|null, onProviderEvent: Function, permissionMode: string, interactionMode: string }>} */
+    /** @type {Map<string, { driver: Object, agent: string, cwd: string|null, terminalId: number|null, onProviderEvent: Function, permissionMode: string, interactionMode: string }>} */
     this._sessions = new Map();
     this._capabilityProbes = new Map();
     this._materializedAttachmentBytes = 0;
@@ -298,6 +303,7 @@ class DriverChatManager extends EventEmitter {
       accountId: env.CODEAGENTSWARM_PROVIDER_ACCOUNT_ID || 'current',
       accountLabel: env.CODEAGENTSWARM_PROVIDER_ACCOUNT_LABEL || '',
       cwd: typeof cwd === 'string' && cwd ? cwd : null,
+      terminalId: Number.isInteger(terminalId) && terminalId > 0 ? terminalId : null,
       onProviderEvent,
       permissionMode: normalizedPermissionMode,
       interactionMode: normalizedInteractionMode
@@ -438,6 +444,7 @@ class DriverChatManager extends EventEmitter {
       ? input
       : { text: input };
     const text = typeof structured.text === 'string' ? structured.text : '';
+    const internal = structured.visibility === 'internal';
     let attachments = normalizeChatAttachments(structured.attachments);
     if (!text.trim() && attachments.length === 0) {
       throw new Error('sendTurn requires non-empty text or attachments');
@@ -475,7 +482,17 @@ class DriverChatManager extends EventEmitter {
       session.materializedAttachmentBytes = (session.materializedAttachmentBytes || 0) + bytes;
       this._materializedAttachmentBytes += bytes;
     }
-    return session.driver.sendTurn({ text, ...(attachments.length ? { attachments } : {}) });
+    if (internal) session.internalTurn = { turnId: null };
+    try {
+      const turn = await session.driver.sendTurn({ text, ...(attachments.length ? { attachments } : {}) });
+      if (internal && session.internalTurn && !session.internalTurn.turnId && turn?.turnId) {
+        session.internalTurn.turnId = turn.turnId;
+      }
+      return turn;
+    } catch (error) {
+      if (internal) delete session.internalTurn;
+      throw error;
+    }
   }
 
   /**
@@ -789,6 +806,31 @@ class DriverChatManager extends EventEmitter {
   _handleProviderEvent(sessionId, event) {
     const session = this._sessions.get(sessionId);
     if (!session) return;
+    if (session.internalTurn && !session.internalTurn.turnId && event?.turnId) {
+      session.internalTurn.turnId = event.turnId;
+    }
+    const internal = session.internalTurn && (
+      !session.internalTurn.turnId || event?.turnId === session.internalTurn.turnId
+    );
+    if (internal) event = { ...event, visibility: 'internal' };
+    if (
+      event?.type === 'turn.diff.updated'
+      && typeof event.payload?.unifiedDiff === 'string'
+      && session.terminalId !== null
+      && this._onSessionDiff
+    ) {
+      try {
+        this._onSessionDiff({
+          sessionId,
+          agent: session.agent,
+          terminalId: session.terminalId,
+          cwd: session.cwd,
+          unifiedDiff: event.payload.unifiedDiff
+        });
+      } catch (error) {
+        console.warn(`[chat] Could not record the session diff: ${error.message}`);
+      }
+    }
     if (event && event.type === 'session.config.updated') {
       for (const key of ['model', 'effort', 'serviceTier']) {
         if (event.payload?.[key] !== undefined) session[key] = event.payload[key];
@@ -852,6 +894,8 @@ class DriverChatManager extends EventEmitter {
       ...(session.accountLabel ? { accountLabel: session.accountLabel } : {}),
       event
     });
+
+    if (internal && event?.type === 'turn.completed') delete session.internalTurn;
 
     if (event && event.type === 'session.exited') {
       // The child is gone and the session can never be reused: detach and drop

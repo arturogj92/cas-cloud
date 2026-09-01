@@ -74,6 +74,14 @@ function installedVersion(prefix) {
   }
 }
 
+function localReinstallDigest(spec, env) {
+  if (env.CAS_CLI_REINSTALL_SAME_VERSION !== '1') return null;
+  if (!path.isAbsolute(spec) || !fs.statSync(spec, { throwIfNoEntry: false })?.isFile()) {
+    throw new Error('CAS_CLI_REINSTALL_SAME_VERSION requires a local package file');
+  }
+  return crypto.createHash('sha256').update(fs.readFileSync(spec)).digest('hex').slice(0, 12);
+}
+
 function switchCurrent(currentPath, target) {
   const temporary = `${currentPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   fs.symlinkSync(target, temporary);
@@ -93,7 +101,7 @@ function systemctlArgs(env, action) {
   return [...(scope === 'user' ? ['--user'] : []), action, service];
 }
 
-async function defaultWaitForHealthy({ env, commandEnv, version, run, timeoutMs }) {
+async function defaultWaitForHealthy({ env, commandEnv, version, previousRuntimeState = null, run, timeoutMs }) {
   const statePath = runtimeStatePath({
     env,
     dataPath: appDataPath({ env }),
@@ -106,7 +114,10 @@ async function defaultWaitForHealthy({ env, commandEnv, version, run, timeoutMs 
     if (state?.status === 'degraded' && state.cliVersion === version) {
       throw new Error(`CAS Cloud ${version} could not restore every session`);
     }
-    if (state?.status === 'ready' && state.cliVersion === version) {
+    const staleRuntime = previousRuntimeState
+      && state?.pid === previousRuntimeState.pid
+      && state?.updatedAt === previousRuntimeState.updatedAt;
+    if (state?.status === 'ready' && state.cliVersion === version && !staleRuntime) {
       const args = systemctlArgs(env, 'is-active');
       run(systemctl, [...args.slice(0, -1), '--quiet', args[args.length - 1]], {
         env: commandEnv,
@@ -156,6 +167,7 @@ async function updateInstallation({
   const updateLockPath = runtimeUpdateLockPath(statePath);
   let releaseUpdateLock = null;
   if (typeof spec !== 'string' || !spec.trim() || spec.length > 4096) throw new Error('CAS_CLI_UPDATE_SPEC is invalid');
+  const reinstallDigest = localReinstallDigest(spec, env);
   fs.mkdirSync(releasesRoot, { recursive: true, mode: 0o700 });
 
   try {
@@ -166,7 +178,11 @@ async function updateInstallation({
     const stagedBin = path.join(stage, 'node_modules', '.bin', 'cas-cli');
     const reportedVersion = run(stagedBin, ['--version'], { env: commandEnv, timeoutMs: 30_000 }).stdout.trim();
     if (reportedVersion !== version) throw new Error('The staged CAS CLI binary reports the wrong version');
-    if (version === previousVersion) {
+    const reinstallRelease = version === previousVersion
+      && reinstallDigest
+      ? `${version}-local-${reinstallDigest}`
+      : null;
+    if (version === previousVersion && !reinstallRelease) {
       fs.rmSync(stage, { recursive: true, force: true });
       output(`CAS Cloud ${version} is already current.`);
       return { updated: false, reason: 'current', version };
@@ -179,7 +195,12 @@ async function updateInstallation({
       return { updated: false, reason: 'busy' };
     }
 
-    const releaseRoot = path.join(releasesRoot, version);
+    const releaseRoot = path.join(releasesRoot, reinstallRelease || version);
+    if (fs.existsSync(releaseRoot) && fs.realpathSync(currentPath) === fs.realpathSync(releaseRoot)) {
+      fs.rmSync(stage, { recursive: true, force: true });
+      output(`CAS Cloud ${version} already uses this local package.`);
+      return { updated: false, reason: 'current', version };
+    }
     if (fs.existsSync(releaseRoot)) {
       fs.rmSync(stage, { recursive: true, force: true });
       if (installedVersion(releaseRoot) !== version) throw new Error('The existing CAS CLI release is invalid');
@@ -192,7 +213,14 @@ async function updateInstallation({
       run(systemctl, systemctlArgs(env, 'restart'), { env: commandEnv, timeoutMs: 120_000 });
       const seconds = Number(env.CAS_CLI_UPDATE_HEALTH_TIMEOUT_SECONDS || 1500);
       const timeoutMs = Number.isFinite(seconds) && seconds >= 1 && seconds <= 1800 ? seconds * 1000 : 1_500_000;
-      await waitForHealthy({ env, commandEnv, version, run, timeoutMs });
+      await waitForHealthy({
+        env,
+        commandEnv,
+        version,
+        previousRuntimeState: { pid: latestState.pid, updatedAt: latestState.updatedAt },
+        run,
+        timeoutMs,
+      });
     } catch (error) {
       switchCurrent(currentPath, previousTarget);
       try {
