@@ -9,6 +9,7 @@ const { MobileRelayClient } = require('../mobile/mobile-relay-client');
 const { createKeyPair } = require('../mobile/mobile-crypto');
 const { RemoteRuntimeClient } = require('../mobile/remote-runtime-client');
 const { RemoteRuntimeStore } = require('../mobile/remote-runtime-store');
+const { desktopConnectionLink } = require('../mobile/desktop-connection-link');
 const { PeerRuntimeNetwork } = require('../mobile/peer-runtime-network');
 const { HeadlessSessionBridge } = require('./headless-session-bridge');
 const { createHeadlessChatPreferences } = require('./headless-chat-preferences');
@@ -871,9 +872,10 @@ function createHeadlessHost({
     setSessionStatus: ({ sessionId, status }) => updateIdentity(sessionId, { workStatus: status }),
     handoffSession,
     sessionAction,
-    closeSession: async ({ sessionId }) => ({
-      success: (await manager.stopSession(sessionId))?.stopped === true,
-    }),
+    closeSession: async ({ sessionId }) => {
+      await manager.stopSession(sessionId);
+      return { success: true };
+    },
     minimizeSession: ({ sessionId }) => updateIdentity(sessionId, { minimized: true }),
     restoreSession: ({ sessionId }) => updateIdentity(sessionId, { minimized: false }),
     sendTurn,
@@ -919,6 +921,10 @@ function createHeadlessHost({
     peerRuntimeNetwork,
     dataPath: resolvedDataPath,
     deliverMessage: deliverCoordinatedMessage,
+    createPairingLink: async () => {
+      const pairing = await relay.createPairing();
+      return { url: desktopConnectionLink(pairing), expiresAt: pairing.expiresAt };
+    },
   });
 
   return {

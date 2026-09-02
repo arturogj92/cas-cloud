@@ -119,7 +119,7 @@ function publicRemoteState(client) {
 }
 
 class HeadlessSessionBridge {
-  constructor({ runtime, remoteClient, peerRuntimeNetwork = null, dataPath, deliverMessage, randomBytes = crypto.randomBytes } = {}) {
+  constructor({ runtime, remoteClient, peerRuntimeNetwork = null, dataPath, deliverMessage, createPairingLink = null, randomBytes = crypto.randomBytes } = {}) {
     if (!runtime || !remoteClient || typeof deliverMessage !== 'function' || !path.isAbsolute(dataPath || '')) {
       throw new Error('CAS Cloud session bridge configuration is invalid');
     }
@@ -128,6 +128,7 @@ class HeadlessSessionBridge {
     this.peerRuntimeNetwork = peerRuntimeNetwork;
     this.dataPath = dataPath;
     this.deliverMessage = deliverMessage;
+    this.createPairingLink = createPairingLink;
     this.adminToken = randomBytes(32).toString('hex');
     this.sessionSecret = randomBytes(32);
     this.server = null;
@@ -326,6 +327,15 @@ class HeadlessSessionBridge {
       if (!safeBearer(request, this.adminToken)) return sendJson(response, 401, { error: 'Unauthorized' });
       if (request.method === 'GET' && url.pathname === '/admin/remote-runtime') {
         return sendJson(response, 200, publicRemoteState(this.remoteClient));
+      }
+      if (request.method === 'POST' && url.pathname === '/admin/pairing-link') {
+        if (typeof this.createPairingLink !== 'function') return sendJson(response, 503, { error: 'Pairing is unavailable' });
+        try {
+          const result = await this.createPairingLink();
+          return sendJson(response, 201, { url: result.url, expiresAt: result.expiresAt });
+        } catch (_) {
+          return sendJson(response, 503, { error: 'Could not create a connection link' });
+        }
       }
       if (request.method === 'POST' && url.pathname === '/admin/remote-runtime/pair') {
         const body = await readJson(request);

@@ -47,6 +47,9 @@ function hasStaleSiblingWorktreeRuntime(text) {
 function hasStaleSourceCheckoutRuntime(text) {
   const candidates = [text.trim(), ...[...text.matchAll(/["']([^"']+)["']/g)].map(match => match[1])];
   return candidates.some((candidate) => {
+    if (candidate.includes(WORKTREE_MARKER)) return false;
+    const ownedPaths = [OWNED_SOURCE_RUNTIME, OWNED_SOURCE_LAUNCHER].map(normalizeRuntimePath);
+    if (ownedPaths.some(owned => candidate !== owned && candidate.includes(owned))) return false;
     if (!SOURCE_CHECKOUT_SUFFIXES.some(suffix => candidate.endsWith(suffix))) return false;
     if (!/^(?:[a-z]:\/|\/)/i.test(candidate)) return false;
     const withoutRoot = candidate.replace(/^[a-z]:\//i, '').replace(/^\/+/, '');

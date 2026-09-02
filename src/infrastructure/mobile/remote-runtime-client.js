@@ -26,6 +26,7 @@ const RUNTIME_KINDS = new Set([
   'session.identity.updated',
   'projects.updated',
   'projects.operation.updated',
+  'project.icon.generated',
   'tasks.changed',
   'provider.login.event',
   'provider.operation.updated',
@@ -1035,7 +1036,7 @@ class RemoteRuntimeClient {
     let bytes;
     try {
       bytes = Buffer.byteLength(JSON.stringify(envelope));
-      if (!envelope || typeof envelope !== 'object' || bytes > MAX_RUNTIME_MESSAGE_BYTES || !RUNTIME_KINDS.has(envelope.kind)) {
+      if (!envelope || typeof envelope !== 'object' || bytes > MAX_RUNTIME_MESSAGE_BYTES) {
         throw new Error('Invalid runtime envelope');
       }
       assertPublicPayload(envelope);
@@ -1046,7 +1047,10 @@ class RemoteRuntimeClient {
       }
       safe = stripPathFields(envelope);
     } catch {
-      this._diagnostic('remote.runtime_rejected', { reason: 'invalid_envelope' });
+      const kind = typeof envelope?.kind === 'string' && /^[a-z][a-z0-9.]{0,63}$/.test(envelope.kind)
+        ? envelope.kind
+        : undefined;
+      this._diagnostic('remote.runtime_rejected', { reason: 'invalid_envelope', kind });
       return this._protocolFailure(this.socket);
     }
     if (safe.kind === 'command.accepted') {
@@ -1131,6 +1135,15 @@ class RemoteRuntimeClient {
       return;
     }
     if (seq <= cursor.seq) return;
+    if (!RUNTIME_KINDS.has(safe.kind)) {
+      this._diagnostic('remote.runtime_ignored', { kind: safe.kind, seq });
+      this._setState({
+        ...this.state,
+        cursor: { runtimeId: cursor.runtimeId, seq },
+        error: null,
+      });
+      return;
+    }
     this._setState({
       ...this.state,
       cursor: { runtimeId: cursor.runtimeId, seq },

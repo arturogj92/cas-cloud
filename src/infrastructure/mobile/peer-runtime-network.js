@@ -106,6 +106,7 @@ class PeerRuntimeNetwork {
     this.loadRosters = loadRosters;
     this.saveRosters = saveRosters;
     this.rosters = new Map();
+    this.revokedPeers = new Set();
     this.peers = new Map();
     this.clients = new Map();
     this.clientSockets = new Map();
@@ -120,7 +121,14 @@ class PeerRuntimeNetwork {
     if (this.started) return;
     this.started = true;
     const saved = this.loadRosters() || {};
-    for (const [deviceId, peers] of Object.entries(saved)) {
+    const savedRosters = saved.version === 1 && saved.rosters && typeof saved.rosters === 'object'
+      ? saved.rosters : saved;
+    if (saved.version === 1 && Array.isArray(saved.revoked)) {
+      this.revokedPeers = new Set(saved.revoked.filter((runtimeId) => (
+        ID_PATTERN.test(runtimeId || '') && runtimeId !== this.runtimeId
+      )));
+    }
+    for (const [deviceId, peers] of Object.entries(savedRosters)) {
       if (!ID_PATTERN.test(deviceId) || !Array.isArray(peers)) continue;
       this.rosters.set(deviceId, peers.slice(0, MAX_PEERS).filter((peer) => validPeer(peer, this.runtimeId)));
     }
@@ -155,7 +163,12 @@ class PeerRuntimeNetwork {
     }])).values()];
     if (unique.length) this.rosters.set(deviceId, unique);
     else this.rosters.delete(deviceId);
-    this.saveRosters(Object.fromEntries(this.rosters));
+    for (const runtimeId of this.revokedPeers) {
+      if (![...this.rosters.values()].some((roster) => roster.some((peer) => peer.runtimeId === runtimeId))) {
+        this.revokedPeers.delete(runtimeId);
+      }
+    }
+    this._saveState();
     this._rebuildPeers();
     this._diagnostic('peer.roster_replaced', {
       rosters: this.rosters.size,
@@ -164,6 +177,16 @@ class PeerRuntimeNetwork {
       removed: [...previousPeers].filter((runtimeId) => !this.peers.has(runtimeId)).length,
     });
     return { peers: unique.length };
+  }
+
+  removePeer(runtimeId) {
+    if (!ID_PATTERN.test(runtimeId || '')) return false;
+    if (![...this.rosters.values()].some((roster) => roster.some((peer) => peer.runtimeId === runtimeId))) return false;
+    this.revokedPeers.add(runtimeId);
+    this._saveState();
+    this._rebuildPeers();
+    this._diagnostic('peer.removed_by_user', { peer: peerRef(runtimeId) });
+    return true;
   }
 
   getClients() { return [...this.clients.values()]; }
@@ -181,6 +204,7 @@ class PeerRuntimeNetwork {
     const next = new Map();
     for (const roster of this.rosters.values()) {
       for (const peer of roster) {
+        if (this.revokedPeers.has(peer.runtimeId)) continue;
         const existing = next.get(peer.runtimeId);
         if (existing && existing.publicKey !== peer.publicKey) continue;
         next.set(peer.runtimeId, peer);
@@ -197,6 +221,14 @@ class PeerRuntimeNetwork {
       if (!this.clients.has(peer.runtimeId)) this._addPeer(peer);
     }
     this._notifyClients();
+  }
+
+  _saveState() {
+    this.saveRosters({
+      version: 1,
+      rosters: Object.fromEntries(this.rosters),
+      revoked: [...this.revokedPeers],
+    });
   }
 
   _addPeer(peer) {

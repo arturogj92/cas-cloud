@@ -10,6 +10,7 @@ const { updateInstallation } = require('../infrastructure/headless/headless-upda
 const { pairingPayload } = require('../infrastructure/mobile/mobile-pairing-ipc');
 const { mobileWebOrigin } = require('../infrastructure/mobile/mobile-build-channel');
 const { requestHeadlessBridge } = require('../infrastructure/headless/headless-session-bridge');
+const { resolvePairingInput } = require('../infrastructure/mobile/desktop-connection-link');
 const {
   DEFAULT_BACKEND_URL,
   appDataPath,
@@ -21,7 +22,6 @@ const {
 const version = typeof CAS_CLI_BUNDLED_VERSION === 'string'
   ? CAS_CLI_BUNDLED_VERSION
   : JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')).version;
-const DEFAULT_PAIRING_CODE_ORIGIN = 'https://codeagentswarm-connect.elcaminodelprogramadorweb.workers.dev';
 
 function help() {
   return `CAS CLI ${version}
@@ -32,6 +32,7 @@ Usage:
   cas-cli setup
   cas-cli doctor
   cas-cli update
+  cas-cli connect
   cas-cli link PAIRING_CODE
   cas-cli remote-status
   cas-cli unlink
@@ -59,7 +60,7 @@ function parseCliArgs(argv) {
   });
   const requestedCommand = parsed.positionals.shift() || 'serve';
   const command = requestedCommand === 'cloud' ? 'serve' : requestedCommand;
-  if (!['serve', 'setup', 'doctor', 'update', 'help', 'link', 'remote-status', 'unlink'].includes(command)) {
+  if (!['serve', 'setup', 'doctor', 'update', 'help', 'connect', 'link', 'remote-status', 'unlink'].includes(command)) {
     throw new Error(`Unknown command: ${command}`);
   }
   const pairingInput = command === 'link' ? parsed.positionals.shift() : null;
@@ -70,29 +71,6 @@ function parseCliArgs(argv) {
   }
   const { ['projects-root']: projectsRoot, ...values } = parsed.values;
   return { command, ...values, projectsRoot, ...(pairingInput ? { pairingInput } : {}) };
-}
-
-async function resolvePairingInput(raw, fetchImpl = globalThis.fetch) {
-  const compact = String(raw || '').trim().toUpperCase().replace(/[\s-]/g, '');
-  if (!/^[A-HJ-NP-Z2-9]{8}$/.test(compact)) throw new Error('This pairing code is not valid');
-  const code = `${compact.slice(0, 4)}-${compact.slice(4)}`;
-  const origin = new URL(process.env.CAS_PAIRING_CODE_ORIGIN || DEFAULT_PAIRING_CODE_ORIGIN);
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname);
-  if ((origin.protocol !== 'https:' && !(origin.protocol === 'http:' && local)) || origin.username || origin.password) {
-    throw new Error('The pairing service is not secure');
-  }
-  try {
-    const response = await fetchImpl(`${origin.origin}/api/mobile/pairing-code/${encodeURIComponent(code)}`, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) throw new Error();
-    const body = await response.json();
-    if (typeof body.pairingUri !== 'string') throw new Error();
-    return body.pairingUri;
-  } catch (_) {
-    throw new Error('This pairing code is invalid or has expired');
-  }
 }
 
 async function linkRemoteRuntime(pairingInput, { output = console.log, request = requestHeadlessBridge } = {}) {
@@ -114,6 +92,14 @@ async function linkRemoteRuntime(pairingInput, { output = console.log, request =
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
   throw new Error('Pairing timed out before it was confirmed on the Mac');
+}
+
+async function createDesktopConnectionLink({ output = console.log, request = requestHeadlessBridge } = {}) {
+  const result = await request(appDataPath(), 'POST', '/admin/pairing-link');
+  output('Open this link on the Mac running CodeAgentSwarm Desktop:');
+  output(result.url);
+  output('The link is single-use and expires in 5 minutes.');
+  return result;
 }
 
 async function printRemoteStatus({ output = console.log, request = requestHeadlessBridge } = {}) {
@@ -292,6 +278,7 @@ async function main(argv = process.argv.slice(2)) {
   if (options.command === 'doctor') return doctor();
   if (options.command === 'setup') return setupCloud();
   if (options.command === 'update') return updateInstallation();
+  if (options.command === 'connect') return createDesktopConnectionLink();
   if (options.command === 'link') return linkRemoteRuntime(options.pairingInput);
   if (options.command === 'remote-status') return printRemoteStatus();
   if (options.command === 'unlink') return unlinkRemoteRuntime();
@@ -308,6 +295,7 @@ if (require.main === module) {
 module.exports = {
   AGENT_BINARIES,
   doctor,
+  createDesktopConnectionLink,
   help,
   linkRemoteRuntime,
   main,

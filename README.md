@@ -22,6 +22,19 @@ bundled CodeAgentSwarm MCP. It also installs the guarded global instructions
 that publish each session's title, activity and work-phase status. Run
 `cas-cli setup` to perform that same setup explicitly.
 
+To connect this host to CodeAgentSwarm Desktop, keep `serve` running and ask it
+for a temporary Desktop link:
+
+```sh
+cas-cli connect
+```
+
+Open the printed link on the Mac, or paste it into **Remote devices**. Desktop
+reviews and saves the host; its projects and open sessions then appear in the
+normal Agents list and New Agent launcher while the VPS is online. The link is
+single-use, expires after five minutes, uses the existing encrypted relay and
+does not open an inbound VPS port.
+
 To let a Cloud session read or start work on your Mac, enable **Session
 communication** on the Mac, create a Mobile Connect pairing code, and keep the
 Cloud service running while you link it:
@@ -38,7 +51,7 @@ list eligible Mac sessions, read a bounded user/assistant transcript, or list an
 opaque project and start one new Mac session with a prompt when you explicitly
 ask. Only assistant prose returns; paths, reasoning and tool output do not.
 
-Desktop's ordinary CAS Cloud pairing provides the reverse direction. With both
+The Desktop connection created by `cas-cli connect` provides the reverse direction. With both
 links approved, a Mac session can perform the same explicit read, remote start,
 or focused request/response exchange with an eligible CAS Cloud session. Those
 messages stay end-to-end encrypted and are not retained for replay by the relay.

@@ -2332,7 +2332,8 @@ class MobileRuntime {
         await this.manager.interruptTurn(sessionId);
         return { interrupted: true };
       case 'session.stop': {
-        const session = this._session(sessionId);
+        const session = this.sessions.get(sessionId);
+        if (!session || session.state === 'stopped') return { stopped: true };
         let result;
         if (typeof this.closeSession === 'function') {
           const closed = await this.closeSession({

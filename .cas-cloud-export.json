@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "sourceCommit": "08d563a7da7b2fc473a910716905e45c7d876cf3",
+  "sourceCommit": "987fdea3f9f41ad9003463d385e07e98644d4c63",
   "sourceDirty": false,
-  "sourceFiles": 137,
+  "sourceFiles": 138,
   "files": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -81,6 +81,7 @@
     "src/infrastructure/hooks/title-gate-script.js",
     "src/infrastructure/mcp/antigravity-mcp-launcher.js",
     "src/infrastructure/mcp/mcp-stdio-server.js",
+    "src/infrastructure/mobile/desktop-connection-link.js",
     "src/infrastructure/mobile/mobile-build-channel.js",
     "src/infrastructure/mobile/mobile-crypto.js",
     "src/infrastructure/mobile/mobile-pairing-ipc.js",
