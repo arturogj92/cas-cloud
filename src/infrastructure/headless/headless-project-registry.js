@@ -239,6 +239,16 @@ class HeadlessProjectRegistry {
       const result = this._registerPath(resolved, root ? this._rootByPath(root.rootPath).root_id : null, { legacy: true });
       if (result.changed) changed = true;
     }
+    for (const row of this.db.prepare('SELECT project_id, path FROM runtime_projects WHERE registered = 1').all()) {
+      let resolved;
+      try { resolved = fs.realpathSync(row.path); } catch (_) { continue; }
+      if (resolved === row.path) continue;
+      const canonical = this.db.prepare('SELECT project_id FROM runtime_projects WHERE path = ? AND registered = 1').get(resolved);
+      if (!canonical || canonical.project_id === row.project_id) continue;
+      this.db.prepare('UPDATE runtime_projects SET registered = 0, updated_at = CURRENT_TIMESTAMP WHERE project_id = ?')
+        .run(row.project_id);
+      changed = true;
+    }
     return changed;
   }
 
@@ -518,12 +528,22 @@ class HeadlessProjectRegistry {
     return this._recordRequest(requestId, hash, { projectId: project.projectId, revision, updated: true });
   }
 
-  clone({ rootId, url, relativePath, requestId }) {
+  clone({ rootId, url, relativePath, displayName, color, icon, requestId }) {
     const normalizedUrl = validateGitUrl(url);
     const root = this._root(rootId);
     this._assertSecureCloneRoot(root);
     const normalizedRelative = validateCloneChildName(relativePath || cloneDirectoryName(normalizedUrl));
-    const hash = requestHash('clone', { rootId, url: normalizedUrl, relativePath: normalizedRelative });
+    const appearance = {
+      ...(displayName !== undefined ? { displayName: String(displayName || '').trim().slice(0, 120) } : {}),
+      ...(color !== undefined ? { color: String(color || '').trim().slice(0, 32) } : {}),
+      ...(icon !== undefined ? { icon } : {}),
+    };
+    if ((appearance.displayName !== undefined && !appearance.displayName)
+      || (appearance.icon !== undefined && appearance.icon !== null
+        && (typeof appearance.icon !== 'string' || !ICON_PATTERN.test(appearance.icon)))) {
+      throw runtimeError('invalid_project_update', 'Project changes are invalid');
+    }
+    const hash = requestHash('clone', { rootId, url: normalizedUrl, relativePath: normalizedRelative, ...appearance });
     const duplicate = this._request(requestId, hash);
     if (duplicate) return duplicate;
     const destinationInfo = this._cloneDestination(root, normalizedRelative, normalizedUrl);
@@ -540,6 +560,7 @@ class HeadlessProjectRegistry {
       requestId,
       rootId,
       url: normalizedUrl,
+      appearance,
       destination: destinationInfo.destination,
       temporaryDestination: null,
       temporaryIdentity: null,
@@ -682,7 +703,18 @@ class HeadlessProjectRegistry {
           return this._finish(operation, 'failed', 'path_symlink_escape');
         }
         const registered = this._registerPath(resolved, root.root_id);
-        const revision = registered.changed ? this._bumpRevision() : this.getRevision();
+        if (Object.keys(operation.appearance).length) {
+          this.db.prepare(`UPDATE runtime_projects
+            SET display_name = COALESCE(?, display_name), color = COALESCE(?, color), icon = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE project_id = ?`).run(
+            operation.appearance.displayName ?? null,
+            operation.appearance.color ?? null,
+            operation.appearance.icon === undefined ? registered.row.icon || null : operation.appearance.icon,
+            registered.row.project_id,
+          );
+        }
+        const revision = registered.changed || Object.keys(operation.appearance).length
+          ? this._bumpRevision() : this.getRevision();
         this.db.prepare(`UPDATE runtime_project_operations SET state = 'succeeded', project_id = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE operation_id = ?`)
           .run(registered.row.project_id, operation.operationId);
         this.running.delete(operation.operationId);

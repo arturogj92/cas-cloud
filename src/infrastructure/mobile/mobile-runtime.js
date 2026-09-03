@@ -30,7 +30,18 @@ const {
 
 const PROTOCOL_VERSION = 2;
 const SESSION_SUBSCRIPTIONS_FEATURE = 'session-subscriptions';
-const SUBSCRIPTION_ONLY_EVENT_TYPES = new Set(['content.delta', 'item.updated', 'turn.diff.updated']);
+const SUBSCRIPTION_ONLY_EVENT_TYPES = new Set([
+  'session.config.updated',
+  'session.commands.updated',
+  'thread.started',
+  'thread.token-usage.updated',
+  'turn.diff.updated',
+  'item.started',
+  'item.updated',
+  'item.completed',
+  'content.delta',
+  'account.rate-limits.updated',
+]);
 const STREAM_METRICS_INTERVAL_MS = 60_000;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const MAX_ITEMS_PER_SESSION = 500;
@@ -1784,9 +1795,17 @@ class MobileRuntime {
     }
     if (command.type === 'project.clone') {
       if (typeof this.cloneProject !== 'function') throw new Error('Remote project cloning is unavailable');
-      exactPayload(['rootId', 'url', 'relativePath', 'requestId']);
+      exactPayload(['rootId', 'url', 'relativePath', 'displayName', 'color', 'icon', 'requestId']);
       if (typeof payload.requestId !== 'string' || !payload.requestId) throw new Error('A clone requestId is required');
-      return this.cloneProject({ rootId: payload.rootId, url: payload.url, relativePath: payload.relativePath, requestId: payload.requestId });
+      return this.cloneProject({
+        rootId: payload.rootId,
+        url: payload.url,
+        relativePath: payload.relativePath,
+        displayName: payload.displayName,
+        color: payload.color,
+        icon: payload.icon,
+        requestId: payload.requestId,
+      });
     }
     if (command.type === 'project.clone.cancel') {
       if (typeof this.cancelProjectClone !== 'function') throw new Error('Remote clone cancellation is unavailable');

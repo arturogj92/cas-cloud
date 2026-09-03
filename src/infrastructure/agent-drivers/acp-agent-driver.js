@@ -1196,12 +1196,17 @@ class AcpAgentDriver extends EventEmitter {
     try {
       const result = await prompt;
       const stopReason = result && result.stopReason;
-      completion = {
-        state: stopReason === 'cancelled' ? 'cancelled' : 'completed'
-      };
+      completion = stopReason === 'rate_limit'
+        ? { state: 'failed', errorMessage: 'Rate limit reached', errorCode: 'rate_limit' }
+        : { state: stopReason === 'cancelled' ? 'cancelled' : 'completed' };
     } catch (error) {
       if (this._stopping || this._state === 'stopped') return;
-      completion = { state: 'failed', errorMessage: error.message };
+      completion = {
+        state: 'failed',
+        errorMessage: error.message,
+        ...(error.rpcCode !== undefined ? { errorCode: error.rpcCode } : {}),
+        ...(error.rpcData !== undefined ? { errorData: error.rpcData } : {})
+      };
     } finally {
       this._promptsInFlight = Math.max(0, this._promptsInFlight - 1);
     }
@@ -1215,7 +1220,11 @@ class AcpAgentDriver extends EventEmitter {
         this._emit({
           type: 'runtime.error',
           turnId,
-          payload: { message: completion.errorMessage }
+          payload: {
+            message: completion.errorMessage,
+            ...(completion.errorCode !== undefined ? { code: completion.errorCode } : {}),
+            ...(completion.errorData !== undefined ? { detail: { data: completion.errorData } } : {})
+          }
         });
       }
       return;

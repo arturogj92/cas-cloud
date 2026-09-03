@@ -9,6 +9,7 @@
  */
 
 const crypto = require('crypto');
+const { normalizeProviderErrorEvent } = require('../../shared/provider-error-presentation');
 
 /**
  * Every canonical event type a driver may emit.
@@ -189,6 +190,7 @@ const PROVIDER_EVENT_TYPE_SET = new Set(PROVIDER_EVENT_TYPES);
  * @typedef {Object} TurnCompletedPayload
  * @property {'completed'|'failed'|'interrupted'|'cancelled'} state
  * @property {string} [errorMessage]
+ * @property {string|number|Object} [errorCode]
  */
 
 /**
@@ -299,7 +301,8 @@ const PROVIDER_EVENT_TYPE_SET = new Set(PROVIDER_EVENT_TYPES);
 /**
  * @typedef {Object} RuntimeErrorPayload
  * @property {string} message
- * @property {'provider_error'|'transport_error'|'unknown'} [class]
+ * @property {'provider_error'|'transport_error'|'usage_limit'|'unknown'} [class]
+ * @property {string|number|Object} [code]
  * @property {Object} [detail]
  */
 
@@ -367,7 +370,7 @@ function createProviderEvent(bareEvent, context) {
   if (bare.requestId !== undefined) event.requestId = bare.requestId;
   if (bare.raw !== undefined) event.raw = bare.raw;
 
-  return event;
+  return normalizeProviderErrorEvent(event);
 }
 
 /**

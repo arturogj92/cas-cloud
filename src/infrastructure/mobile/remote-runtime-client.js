@@ -86,6 +86,8 @@ const COMMAND_TYPES = new Set([
   'session.resume',
   'history.older',
   'projects.list',
+  'project.directories.list',
+  'project.update',
   'project.register',
   'project.clone',
   'project.clone.cancel',
@@ -111,7 +113,7 @@ const COMMAND_TYPES = new Set([
   'workspace.git.switch',
   'workspace.git.create',
 ]);
-const NON_REPLAYABLE_COMMANDS = new Set(['history.older', 'coordination.sessions', 'coordination.transcript', 'coordination.message', 'projects.list', 'tasks.list',
+const NON_REPLAYABLE_COMMANDS = new Set(['history.older', 'coordination.sessions', 'coordination.transcript', 'coordination.message', 'projects.list', 'project.directories.list', 'tasks.list',
   'providers.list', 'provider.login.describe', 'provider.login.start', 'provider.login.submit', 'provider.login.cancel',
   'workspace.files.list', 'workspace.files.read', 'workspace.files.search',
   'workspace.git.status', 'workspace.git.diff', 'workspace.git.log', 'workspace.git.branches']);
@@ -171,15 +173,20 @@ function assertPublicPayload(value, depth = 0) {
   }
 }
 
-function stripPathFields(value, depth = 0) {
+function stripPathFields(value, depth = 0, preserveRelativePaths = false) {
   if (depth > 40) throw new Error('Remote runtime payload is too deeply nested');
-  if (Array.isArray(value)) return value.map((item) => stripPathFields(item, depth + 1));
+  if (Array.isArray(value)) return value.map((item) => stripPathFields(item, depth + 1, preserveRelativePaths));
   if (!value || typeof value !== 'object') return value;
   const clean = {};
   for (const [key, child] of Object.entries(value)) {
     const normalized = normalizedKey(key);
-    if (PATH_KEYS.has(normalized) || normalized.endsWith('path')) continue;
-    clean[key] = stripPathFields(child, depth + 1);
+    if (PATH_KEYS.has(normalized) || normalized.endsWith('path')) {
+      if (preserveRelativePaths && (child === null || isSafeRelativePath(child))) {
+        clean[key] = typeof child === 'string' ? child.replace(/\\/g, '/') : null;
+      }
+      continue;
+    }
+    clean[key] = stripPathFields(child, depth + 1, preserveRelativePaths);
   }
   return clean;
 }
@@ -768,7 +775,7 @@ class RemoteRuntimeClient {
     }
     if (command.payload !== undefined) {
       assertPublicPayload(command.payload);
-      assertPathlessCommand(command.payload, 0, command.type === 'project.register' || command.type === 'project.clone'
+      assertPathlessCommand(command.payload, 0, command.type === 'project.directories.list' || command.type === 'project.register' || command.type === 'project.clone'
         || command.type.startsWith('workspace.files.'));
       wire.payload = clone(command.payload);
     }
@@ -1045,7 +1052,10 @@ class RemoteRuntimeClient {
           throw new Error('Invalid runtime snapshot');
         }
       }
-      safe = stripPathFields(envelope);
+      const commandType = envelope.kind === 'command.result'
+        ? this.pendingCommands.get(envelope.commandId)?.message?.command?.type
+        : null;
+      safe = stripPathFields(envelope, 0, commandType === 'project.directories.list');
     } catch {
       const kind = typeof envelope?.kind === 'string' && /^[a-z][a-z0-9.]{0,63}$/.test(envelope.kind)
         ? envelope.kind

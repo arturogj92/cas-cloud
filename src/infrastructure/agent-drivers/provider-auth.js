@@ -37,6 +37,7 @@ const AUTH_ERROR_PATTERNS = Object.freeze([
   /\bunauthenticated\b/i,
   /\bauthentication required\b/i,
   /\bplease (?:run|use) [^\n]*(?:login|log in|sign in)\b/i,
+  /\brun [^\n]*(?:login|log in|sign in)\b/i,
   /\b(?:login|log in|sign in) (?:is )?required\b/i,
   /\bmissing (?:an? )?(?:api key|access token|auth token|credentials?)\b/i,
   /\b(?:invalid|expired) (?:api key|access token|auth token|credentials?)\b/i,

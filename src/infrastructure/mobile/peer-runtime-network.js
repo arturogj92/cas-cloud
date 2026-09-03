@@ -8,6 +8,7 @@ const KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_PEERS = 32;
 const PEER_ACCESS_TTL_MS = 7 * 24 * 60 * 60_000;
 const PEER_HANDSHAKE_TIMEOUT_MS = 5_000;
+const PEER_DENIAL_FEATURE = 'peer-denial';
 
 function peerRef(value) {
   return value
@@ -54,7 +55,18 @@ class PeerRelaySocket extends EventEmitter {
       return;
     }
     if (message.kind === 'runtime.message' && message.box) {
-      if (!this.network.relay.sendPeerMessage(this.peer.runtimeId, message.box, 'to-runtime')) {
+      let box = message.box;
+      try {
+        const payload = decryptJson(box, this.network.keyPair.secretKey, this.peer.publicKey);
+        if (payload?.kind === 'hello'
+          && !(Array.isArray(payload.features) && payload.features.includes(PEER_DENIAL_FEATURE))) {
+          box = encryptJson({
+            ...payload,
+            features: [...(Array.isArray(payload.features) ? payload.features : []), PEER_DENIAL_FEATURE],
+          }, this.network.keyPair.secretKey, this.peer.publicKey);
+        }
+      } catch {}
+      if (!this.network.relay.sendPeerMessage(this.peer.runtimeId, box, 'to-runtime')) {
         this.network._diagnostic('peer.route_failed', { peer: peerRef(this.peer.runtimeId), stream: 'to-runtime' });
         this.offline();
       } else if (this.readyState === 1 && !this.handshakeComplete && !this.handshakeTimer) {
@@ -65,11 +77,17 @@ class PeerRelaySocket extends EventEmitter {
 
   receive(box) {
     if (this.readyState !== 1) return;
+    let payload;
     try {
-      decryptJson(box, this.network.keyPair.secretKey, this.peer.publicKey);
+      payload = decryptJson(box, this.network.keyPair.secretKey, this.peer.publicKey);
       this.network.relay.emit('diagnostic', { event: 'peer.response_verified', stream: 'to-client' });
     } catch {
       this.network.relay.emit('diagnostic', { event: 'peer.response_rejected', reason: 'decrypt_failed' });
+      return;
+    }
+    if (payload?.kind === 'peer.denied') {
+      this.network._denyPeer(this.peer.runtimeId);
+      return;
     }
     this.handshakeComplete = true;
     if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
@@ -107,6 +125,7 @@ class PeerRuntimeNetwork {
     this.saveRosters = saveRosters;
     this.rosters = new Map();
     this.revokedPeers = new Set();
+    this.deniedPeers = new Set();
     this.peers = new Map();
     this.clients = new Map();
     this.clientSockets = new Map();
@@ -161,6 +180,7 @@ class PeerRuntimeNetwork {
       publicKey: peer.publicKey,
       name: peer.name.trim().slice(0, 200) || 'Connected host',
     }])).values()];
+    for (const peer of unique) this.deniedPeers.delete(peer.runtimeId);
     if (unique.length) this.rosters.set(deviceId, unique);
     else this.rosters.delete(deviceId);
     for (const runtimeId of this.revokedPeers) {
@@ -214,11 +234,12 @@ class PeerRuntimeNetwork {
       const previous = this.peers.get(runtimeId);
       const current = next.get(runtimeId);
       if (current?.publicKey === previous.publicKey) continue;
+      this.deniedPeers.delete(runtimeId);
       this._removePeer(runtimeId);
     }
     this.peers = next;
     for (const peer of this.peers.values()) {
-      if (!this.clients.has(peer.runtimeId)) this._addPeer(peer);
+      if (!this.deniedPeers.has(peer.runtimeId) && !this.clients.has(peer.runtimeId)) this._addPeer(peer);
     }
     this._notifyClients();
   }
@@ -281,6 +302,7 @@ class PeerRuntimeNetwork {
         scope: 'peer',
         peer: peerRef(peer.runtimeId),
       }),
+      timeouts: { reconnectMax: 5 * 60_000 },
     });
     client.subscribeEnvelopes((envelope) => {
       for (const listener of this.envelopeListeners) listener(peer.runtimeId, envelope, client);
@@ -300,7 +322,35 @@ class PeerRuntimeNetwork {
     this._diagnostic('peer.removed', { peer: peerRef(runtimeId) });
   }
 
+  _denyPeer(runtimeId) {
+    if (!this.peers.has(runtimeId)) return;
+    this.deniedPeers.add(runtimeId);
+    this._removePeer(runtimeId);
+    this._diagnostic('peer.connection_denied', { peer: peerRef(runtimeId) });
+    this._notifyClients();
+  }
+
+  _rosterPeer(runtimeId) {
+    let found = null;
+    for (const roster of this.rosters.values()) {
+      for (const peer of roster) {
+        if (peer.runtimeId !== runtimeId) continue;
+        if (found && found.publicKey !== peer.publicKey) return null;
+        found = peer;
+      }
+    }
+    return found;
+  }
+
   _handleRelayEvent(event) {
+    if (event?.kind === 'peer.online' && ID_PATTERN.test(event.targetRuntimeId || '')) {
+      const client = this.clients.get(event.targetRuntimeId);
+      if (client && client.getState().phase !== 'online') {
+        this._diagnostic('peer.online', { peer: peerRef(event.targetRuntimeId) });
+        client.reconnectNow();
+      }
+      return;
+    }
     if (event?.kind === 'peer.offline' && ID_PATTERN.test(event.targetRuntimeId || '')) {
       this._diagnostic('peer.offline', { peer: peerRef(event.targetRuntimeId) });
       this.clientSockets.get(event.targetRuntimeId)?.offline();
@@ -313,6 +363,21 @@ class PeerRuntimeNetwork {
       || !KEY_PATTERN.test(event.sourcePublicKey || '')) return;
     const peer = this.peers.get(event.sourceRuntimeId);
     if (!peer || peer.publicKey !== event.sourcePublicKey) {
+      const revokedPeer = this.revokedPeers.has(event.sourceRuntimeId)
+        ? this._rosterPeer(event.sourceRuntimeId)
+        : null;
+      if (revokedPeer?.publicKey === event.sourcePublicKey && event.stream === 'to-runtime') {
+        let payload;
+        try { payload = decryptJson(event.box, this.keyPair.secretKey, revokedPeer.publicKey); } catch {}
+        if (payload?.kind === 'hello'
+          && Array.isArray(payload.features)
+          && payload.features.includes(PEER_DENIAL_FEATURE)) {
+          const box = encryptJson({ kind: 'peer.denied' }, this.keyPair.secretKey, revokedPeer.publicKey);
+          if (this.relay.sendPeerMessage(revokedPeer.runtimeId, box, 'to-client')) {
+            this._diagnostic('peer.denial_sent', { peer: peerRef(revokedPeer.runtimeId) });
+          }
+        }
+      }
       this._diagnostic('peer.message_rejected', {
         reason: peer ? 'key_mismatch' : 'not_introduced',
         peer: peerRef(event.sourceRuntimeId),

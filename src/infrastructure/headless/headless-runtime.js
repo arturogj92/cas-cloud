@@ -3,6 +3,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { DriverChatManager, SESSION_EVENT } = require('../agent-drivers/driver-chat-manager');
+const { CHAT_PERMISSION_MODES } = require('../agent-drivers/chat-permission-modes');
+const { classifyProviderStartupError } = require('../agent-drivers/provider-auth');
 const { boundedConversationMessages } = require('../agent-drivers/chat-history-pagination');
 const { MobileRuntime } = require('../mobile/mobile-runtime');
 const { MobileRelayClient } = require('../mobile/mobile-relay-client');
@@ -77,20 +79,15 @@ const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'workspace.git.switch',
   'workspace.git.create',
 ]);
-const FINAL_COORDINATION_STATUSES = new Set(['done', 'pushed', 'completed', 'finished']);
-const COORDINATION_IDLE_MS = 30 * 60_000;
 const COORDINATION_COMPLETION_GRACE_MS = 5000;
 
-function isCoordinatedSessionEligible(session, now = Date.now()) {
-  if (!session || session.state === 'stopped' || typeof session.terminalUuid !== 'string' || !session.terminalUuid) return false;
-  const status = typeof session.workStatus === 'string' ? session.workStatus.trim().toLowerCase() : '';
-  if (FINAL_COORDINATION_STATUSES.has(status)) return false;
-  if (session.currentTurn?.state === 'running' || status === 'needs_input' || status === 'working') return true;
-  const lastActivity = Number(session.lastActivityAt) || Date.parse(session.lastActivityAt);
-  if (Number.isFinite(lastActivity) && now - lastActivity > COORDINATION_IDLE_MS) return false;
-  return Array.from(session.items?.values?.() || []).some((item) => (
-    item?.itemType === 'user_message' || item?.itemType === 'assistant_message'
-  ));
+function isCoordinatedSessionEligible(session) {
+  return Boolean(
+    session
+    && session.state !== 'stopped'
+    && typeof session.terminalUuid === 'string'
+    && session.terminalUuid
+  );
 }
 
 function appDataPath({ env = process.env, platform = process.platform, home = os.homedir() } = {}) {
@@ -375,6 +372,7 @@ function createHeadlessHost({
   generateConversationTitle: generateConversationTitleFn = generateConversationTitle,
   forkConversation: forkConversationFn = forkConversation,
   spawnImpl,
+  getuid = typeof process.getuid === 'function' ? () => process.getuid() : null,
 } = {}) {
   if (typeof getToken !== 'function') throw new Error('CAS CLI requires an access token provider');
   if (!validIdentity(identity)) throw new Error('CAS CLI identity is invalid');
@@ -410,7 +408,23 @@ function createHeadlessHost({
   const startSessionWithPreferences = async (options) => {
     const launchOptions = chatPreferences.apply(options.agent, options);
     if (launchOptions.permissionMode === undefined) launchOptions.permissionMode = 'default';
-    const started = await manager.startSession(launchOptions);
+    if (
+      options.agent === 'claude'
+      && launchOptions.permissionMode === CHAT_PERMISSION_MODES.FULL_ACCESS
+      && getuid?.() === 0
+    ) launchOptions.permissionMode = 'default';
+    let started;
+    try {
+      started = await manager.startSession(launchOptions);
+    } catch (error) {
+      const status = classifyProviderStartupError(options.agent, error);
+      if (status) {
+        error.code = status.state === 'not_installed'
+          ? 'provider_not_installed'
+          : 'provider_unauthenticated';
+      }
+      throw error;
+    }
     chatPreferences.write(started.agent || options.agent, {
       permissionMode: started.permissionMode,
       effort: started.effort,
@@ -963,7 +977,7 @@ function createHeadlessHost({
                 }
                 terminalOrder = Math.max(terminalOrder, saved.terminalOrder || 0);
                 try {
-                  const started = await manager.startSession({
+                  const started = await startSessionWithPreferences({
                     agent: saved.agent,
                     ...(saved.accountId && saved.accountId !== 'current' ? { accountId: saved.accountId } : {}),
                     cwd: saved.cwd,

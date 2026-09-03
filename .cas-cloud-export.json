@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "sourceCommit": "987fdea3f9f41ad9003463d385e07e98644d4c63",
+  "sourceCommit": "2a9841c18841adde79c17e362ef1a06615f9a904",
   "sourceDirty": false,
-  "sourceFiles": 138,
+  "sourceFiles": 139,
   "files": [
     ".github/workflows/ci.yml",
     ".gitignore",
@@ -151,6 +151,7 @@
     "src/shared/logger/child-process-logger.js",
     "src/shared/parsers/session-coordination-message.js",
     "src/shared/parsers/todo-list-parser.js",
+    "src/shared/provider-error-presentation.js",
     "src/shared/utils/conversation-handoff.js",
     "src/shared/utils/normalized-text-search.js",
     "src/shared/utils/preview-string.js",

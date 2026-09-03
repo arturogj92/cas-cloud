@@ -14,7 +14,7 @@ const PEER_BATCH_MAX_MESSAGES = 64;
 const PEER_BATCH_MAX_BYTES = 5 * 1024 * 1024;
 const PEER_BATCH_ITEM_MAX_BYTES = 256 * 1024;
 const PEER_METRICS_INTERVAL_MS = 60_000;
-const BATCHABLE_RUNTIME_EVENT_TYPES = new Set(['content.delta', 'item.updated', 'turn.diff.updated']);
+const BATCHABLE_RUNTIME_KINDS = new Set(['session.event', 'cursor.advanced']);
 // Below this the deflate header and CPU cost outweigh what a small frame saves.
 const COMPRESSION_THRESHOLD_BYTES = 4096;
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -85,7 +85,7 @@ class RelayDeviceSocket extends EventEmitter {
       deviceId: this.device.id,
       ...(codec ? { codec } : {}),
       box: encryptJson(payload, this.client.keyPair.secretKey, this.device.publicKey, codec),
-    }, payload.kind === 'session.event' && BATCHABLE_RUNTIME_EVENT_TYPES.has(payload.event?.type));
+    }, BATCHABLE_RUNTIME_KINDS.has(payload.kind));
   }
 
   receive(box) {
@@ -844,7 +844,7 @@ class MobileRelayClient extends EventEmitter {
       });
       return;
     }
-    if (message.kind === 'peer.message' || message.kind === 'peer.offline') {
+    if (['peer.message', 'peer.offline', 'peer.online'].includes(message.kind)) {
       if (message.kind === 'peer.offline') {
         this.emit('diagnostic', { event: 'peer.route_offline', peer: logRef(message.targetRuntimeId) });
       }

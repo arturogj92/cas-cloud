@@ -2328,13 +2328,15 @@ const NOTIFICATION_MAPPERS = Object.freeze({
     const turn = params?.turn;
     if (!turn?.id) return [];
     const errorMessage = turn.error?.message;
+    const errorCode = turn.error?.codexErrorInfo;
     return [{
       type: 'turn.completed',
       threadId: params.threadId,
       turnId: turn.id,
       payload: {
         state: mapTurnStatus(turn.status),
-        ...(errorMessage ? { errorMessage } : {})
+        ...(errorMessage ? { errorMessage } : {}),
+        ...(errorCode ? { errorCode } : {})
       },
       raw: buildRaw(method, params)
     }];
@@ -2460,6 +2462,7 @@ const NOTIFICATION_MAPPERS = Object.freeze({
 
   error: ({ method, params }) => {
     const message = params?.error?.message;
+    const code = params?.error?.codexErrorInfo;
     const base = {
       threadId: params?.threadId,
       turnId: params?.turnId,
@@ -2471,7 +2474,7 @@ const NOTIFICATION_MAPPERS = Object.freeze({
     return [{
       ...base,
       type: 'runtime.error',
-      payload: { message, class: 'provider_error', detail: params }
+      payload: { message, class: 'provider_error', ...(code ? { code } : {}), detail: params }
     }];
   }
 });
