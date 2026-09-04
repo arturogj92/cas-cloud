@@ -171,33 +171,30 @@ CodeAgentSwarm shows two different things per agent:
    the context stays clear at a glance — name the feature, NOT a low-level step or file,
    and NOT a work PHASE (testing, e2e, validating, reviewing, deploying). Running the e2e
    suite for a settings redesign is titled "Settings Redesign", never "Settings E2E Tests".
-   Examples: "Promo Video for Twitter", "Minimize Agents". You set it ONCE at the start
-   and it almost never changes — the ONLY reasons to set it again are refining it when the
-   goal evolves, or REPLACING it when the agent pivots to a completely different topic.
+   Derive it from the **first user request** that established this conversation's
+   functionality and set it ONCE per conversation. It stays stable across follow-ups,
+   new turns, tasks, reviews, tests, validation, finishing, and context compaction.
 2. **Current activity** = the product-focused step you are doing RIGHT NOW. Example:
    "Implementing the analytics tracking backend". It is shown only when the user hovers
    the agent, and it accumulates as the activity log behind the clock button.
 
 ## 📢 THE RULE
 
-**🚦 FIRST ACTION when you start working in an agent:** set the GENERAL title right away,
-before anything else, so the agent is NEVER without info. It is ALWAYS safe to call — if
-the user manually renamed the agent the app keeps their name (a manual rename always wins
-over an MCP title). Never leave an agent with no meaningful title.
+**🚦 FIRST ACTION in a new conversation:** set the GENERAL title from the first user
+request. On later turns, do NOT call \`set_terminal_title\`; update activity instead.
 
 **📍 ALWAYS leave a CURRENT SUMMARY before acting.** Right after the title, call
 \`update_terminal_activity\` with your first product-focused step, BEFORE running any other
 tool. If an agent has no activity yet, set one before you do anything else — so at every
 moment the user can see what each agent is doing. Never start working with no activity set.
 
-**At the START of work → set the GENERAL title ONCE. As you work → update the ACTIVITY often.**
+**First request → set the title ONCE. Every turn → update the ACTIVITY.**
 
-- ✅ Set the general title once so the user always knows, at a glance, what this agent
-  is for. Set it again only to REFINE it when the overall goal changes (e.g. the user
-  expands the feature), or to REPLACE it when the topic changes RADICALLY.
+- ✅ Keep the title from the first user request. Refining, extending, fixing, reviewing,
+  validating, or finishing that request changes the activity, not the title.
 - ✅ RADICAL topic change → NEW general title, MANDATORY. When the user switches this
   agent to a completely different topic (e.g. from "Minimize Agents" to preparing
-  a release), call \`set_terminal_title\` again with the new topic. Updating only the
+  a release), call \`set_terminal_title\` again with \`replace_existing=true\`. Updating only the
   activity and leaving the old title is WRONG: the tab would keep describing work that
   is no longer happening.
 - ✅ Update the activity every time your focus moves to a new step. This is what the user
@@ -211,7 +208,7 @@ the app's own static UI stays in English; these agent-written labels follow the 
 
 **🔧 THE TWO TOOLS:**
 \`\`\`
-# 1) ONCE at the start - the sticky, product-level tab title
+# 1) ONCE on the conversation's first request - the sticky tab title
 mcp__codeagentswarm-tasks__set_terminal_title(
     title="Promo Video",
     long_title="Promotional video for the Twitter launch"
@@ -232,9 +229,8 @@ mcp__codeagentswarm-tasks__update_terminal_activity(
   in the tab. \`long_title\` is the **GOAL**: one sentence on what this agent is FOR — the
   outcome the work aims at, not the step you are on. The user reads it in the hover under
   the title, labelled GOAL, and it is the ONLY place that answers "why does this agent
-  exist"; six words cannot carry that. Sticky: set once, refine rarely — but ALWAYS set a
-  fresh one when the agent pivots to a completely different topic. Never describe a
-  single step here.
+  exist"; six words cannot carry that. Repeated calls preserve the first title. Pass
+  \`replace_existing=true\` only after the user pivots to completely different functionality.
   \`\`\`
   ✅ title="Orden notificación"
      long_title="Que las notificaciones no salgan antes de que cambie el status del agente"
@@ -260,7 +256,7 @@ mcp__codeagentswarm-tasks__update_terminal_activity(
 1. find_related_active_tasks(...)        ← Check first
 2. create_task(...)                      ← If needed
 3. start_task(task_id=123)
-4. set_terminal_title(                    ← ONCE, AFTER start_task (captures task_id)
+4. set_terminal_title(                    ← only if this conversation has no title
      title="Minimize Agents",
      long_title="Add the ability to minimize and restore agents"
    )
@@ -269,7 +265,7 @@ mcp__codeagentswarm-tasks__update_terminal_activity(
 7. ...keep calling update_terminal_activity as your focus moves to new steps...
 \`\`\`
 
-**🚨 CRITICAL:** call set_terminal_title AFTER start_task so the task_id is captured.
+**🚨 CRITICAL:** starting another task in the same conversation does not justify retitling it.
 
 ### ✅ WITHOUT A TASK (research/investigation):
 \`\`\`
@@ -288,13 +284,10 @@ update_terminal_activity(activity="Implementing restore-from-minimized")
 update_terminal_activity(activity="Persisting minimized state across restarts")
 \`\`\`
 
-### ✅ THE GOAL ITSELF CHANGES → refine the GENERAL title (rare):
+### ✅ THE ORIGINAL GOAL EXPANDS → keep the title and update ACTIVITY:
 \`\`\`
-# The user expanded the feature, so the product goal genuinely changed:
-set_terminal_title(
-  title="Minimize & Restore",
-  long_title="Minimize agents and restore them later from a tray"
-)
+# The user expanded the same feature; the first title remains "Minimize Agents":
+update_terminal_activity(activity="Adding restore from the tray")
 \`\`\`
 
 ### ✅ RADICAL TOPIC CHANGE → set a NEW general title (mandatory):
@@ -303,7 +296,8 @@ set_terminal_title(
 User: "leave that, now let's prepare the release notes"
 set_terminal_title(
   title="Release Notes",
-  long_title="Preparing the release notes for the next version"
+  long_title="Preparing the release notes for the next version",
+  replace_existing=true
 )
 update_terminal_activity(activity="Drafting the release notes")
 # ❌ WRONG: calling only update_terminal_activity here — the tab would still
@@ -312,9 +306,8 @@ update_terminal_activity(activity="Drafting the release notes")
 
 ## ⚠️ WHEN TO USE WHICH
 
-- **General title (set_terminal_title):** once at the start; again when the overall
-  goal/feature changes or the topic changes radically. Aim for very few calls per
-  session — but NEVER leave a stale title on an agent that moved to another topic.
+- **General title (set_terminal_title):** once per conversation from the first request.
+  Replace only after a radical functionality pivot, with \`replace_existing=true\`.
 - **Current activity (update_terminal_activity):** every time you move to a new product
   step. Call it freely - it never disturbs the tab.
 
@@ -392,14 +385,14 @@ update_terminal_activity(activity="Investigating the output handler cost")    �
 **Bad 3 - Never setting a general title:**
 \`\`\`
 # Only calling update_terminal_activity, so the tab never gets a product label.
-✅ Always set_terminal_title ONCE at the start so the tab is meaningful.
+✅ Set the title ONCE from the first user request so the tab is meaningful.
 \`\`\`
 
 **Bad 4 - Radical topic change but the title never changes:**
 \`\`\`
 # Title: "Promo Video". The user then says: "now let's debug the login crash"
 update_terminal_activity(activity="Debugging the login crash")   ← ❌ tab still says "Promo Video"
-✅ set_terminal_title(title="Login Crash", long_title="Debugging the crash when logging in")
+✅ set_terminal_title(title="Login Crash", long_title="Debugging the crash when logging in", replace_existing=true)
 ✅ update_terminal_activity(activity="Reproducing the login crash")
 \`\`\`
 
@@ -440,22 +433,21 @@ Rules:
 
 ` : ''}## 🚨 FINAL REMINDER
 
-- Set the **general title AND the GOAL once** at the start (\`set_terminal_title(title,
-  long_title)\` — always both); set them again when the goal changes or the topic pivots
-  radically — never leave a stale title.
+- Set the **general title AND GOAL once per conversation**, from the first user request.
+  Follow-ups never retitle; a radical functionality pivot uses \`replace_existing=true\`.
 - Keep the **current activity** flowing with \`update_terminal_activity\` (product-level),
   one short sentence per step.
 ${includeStatus ? `- Keep the **status badge** honest with \`set_terminal_status\` at every phase change.
 ` : ''}- The tab should stay stable; the hover + clock-button log carry the detail.
 
 **MEMORIZE:**
-${includeStatus ? `1. **Start work → \`set_terminal_title(title, long_title)\` (ONCE, the tab label AND the GOAL sentence) + \`set_terminal_status(status="working")\`**
+${includeStatus ? `1. **First request → \`set_terminal_title(title, long_title)\` once + \`set_terminal_status(status="working")\`**
 2. **New step → \`update_terminal_activity\` (product step)**
 3. **Phase changed (waiting / testing / done) → \`set_terminal_status\`**
-4. **Goal changed or RADICAL topic change → \`set_terminal_title\` again (refined or NEW title)**
-5. **🏁 Finishing → final \`update_terminal_activity\` summary + \`set_terminal_status\` → \`complete_task\`**` : `1. **Start work → \`set_terminal_title(title, long_title)\` (ONCE, the tab label AND the GOAL sentence)**
+4. **Radical functionality pivot → \`set_terminal_title(..., replace_existing=true)\`**
+5. **🏁 Finishing → final \`update_terminal_activity\` summary + \`set_terminal_status\` → \`complete_task\`**` : `1. **First request → \`set_terminal_title(title, long_title)\` once**
 2. **New step → \`update_terminal_activity\` (product step)**
-3. **Goal changed or RADICAL topic change → \`set_terminal_title\` again (refined or NEW title)**
+3. **Radical functionality pivot → \`set_terminal_title(..., replace_existing=true)\`**
 4. **🏁 Finishing → final \`update_terminal_activity\` summary → \`complete_task\`**`}
 
 ### 📝 Task Plan Management
@@ -703,8 +695,9 @@ Avoid token limits:
 - Creating new? → YES
 
 **Agent Title?**
-- ALWAYS set it immediately when starting work
-- Radical topic change → set a NEW title (don't leave a stale one)
+- Set it from the first user request, once per conversation
+- Follow-up work changes activity, never the title
+- Radical functionality pivot → replace with \`replace_existing=true\`
 
 **Task Continuation?**
 - Same work <24h → Continue
@@ -752,33 +745,30 @@ CodeAgentSwarm shows two different things per agent:
    the context stays clear at a glance — name the feature, NOT a low-level step or file,
    and NOT a work PHASE (testing, e2e, validating, reviewing, deploying). Running the e2e
    suite for a settings redesign is titled "Settings Redesign", never "Settings E2E Tests".
-   Examples: "Promo Video for Twitter", "Minimize Agents". You set it ONCE at the start
-   and it almost never changes — the ONLY reasons to set it again are refining it when the
-   goal evolves, or REPLACING it when the agent pivots to a completely different topic.
+   Derive it from the **first user request** that established this conversation's
+   functionality and set it ONCE per conversation. It stays stable across follow-ups,
+   new turns, tasks, reviews, tests, validation, finishing, and context compaction.
 2. **Current activity** = the product-focused step you are doing RIGHT NOW. Example:
    "Implementing the analytics tracking backend". It is shown only when the user hovers
    the agent, and it accumulates as the activity log behind the clock button.
 
 ## 📢 THE RULE
 
-**🚦 FIRST ACTION when you start working in an agent:** set the GENERAL title right away,
-before anything else, so the agent is NEVER without info. It is ALWAYS safe to call — if
-the user manually renamed the agent the app keeps their name (a manual rename always wins
-over an MCP title). Never leave an agent with no meaningful title.
+**🚦 FIRST ACTION in a new conversation:** set the GENERAL title from the first user
+request. On later turns, do NOT call \`set_terminal_title\`; update activity instead.
 
 **📍 ALWAYS leave a CURRENT SUMMARY before acting.** Right after the title, call
 \`update_terminal_activity\` with your first product-focused step, BEFORE running any other
 tool. If an agent has no activity yet, set one before you do anything else — so at every
 moment the user can see what each agent is doing. Never start working with no activity set.
 
-**At the START of work → set the GENERAL title ONCE. As you work → update the ACTIVITY often.**
+**First request → set the title ONCE. Every turn → update the ACTIVITY.**
 
-- ✅ Set the general title once so the user always knows, at a glance, what this agent
-  is for. Set it again only to REFINE it when the overall goal changes (e.g. the user
-  expands the feature), or to REPLACE it when the topic changes RADICALLY.
+- ✅ Keep the title from the first user request. Refining, extending, fixing, reviewing,
+  validating, or finishing that request changes the activity, not the title.
 - ✅ RADICAL topic change → NEW general title, MANDATORY. When the user switches this
   agent to a completely different topic (e.g. from "Minimize Agents" to preparing
-  a release), call \`set_terminal_title\` again with the new topic. Updating only the
+  a release), call \`set_terminal_title\` again with \`replace_existing=true\`. Updating only the
   activity and leaving the old title is WRONG: the tab would keep describing work that
   is no longer happening.
 - ✅ Update the activity every time your focus moves to a new step. This is what the user
@@ -792,7 +782,7 @@ the app's own static UI stays in English; these agent-written labels follow the 
 
 **🔧 THE TWO TOOLS:**
 \`\`\`
-# 1) ONCE at the start - the sticky, product-level tab title
+# 1) ONCE on the conversation's first request - the sticky tab title
 mcp__codeagentswarm-tasks__set_terminal_title(
     title="Promo Video",
     long_title="Promotional video for the Twitter launch"
@@ -813,9 +803,8 @@ mcp__codeagentswarm-tasks__update_terminal_activity(
   in the tab. \`long_title\` is the **GOAL**: one sentence on what this agent is FOR — the
   outcome the work aims at, not the step you are on. The user reads it in the hover under
   the title, labelled GOAL, and it is the ONLY place that answers "why does this agent
-  exist"; six words cannot carry that. Sticky: set once, refine rarely — but ALWAYS set a
-  fresh one when the agent pivots to a completely different topic. Never describe a
-  single step here.
+  exist"; six words cannot carry that. Repeated calls preserve the first title. Pass
+  \`replace_existing=true\` only after the user pivots to completely different functionality.
   \`\`\`
   ✅ title="Orden notificación"
      long_title="Que las notificaciones no salgan antes de que cambie el status del agente"
@@ -834,9 +823,9 @@ mcp__codeagentswarm-tasks__update_terminal_activity(
 
 ## 🎯 WORKFLOW
 
-### ✅ WHEN STARTING WORK:
+### ✅ ON THE CONVERSATION'S FIRST REQUEST:
 \`\`\`
-1. set_terminal_title(                    ← ONCE, product goal
+1. set_terminal_title(                    ← once per conversation
      title="Minimize Agents",
      long_title="Add the ability to minimize and restore agents"
    )
@@ -851,13 +840,10 @@ update_terminal_activity(activity="Implementing restore-from-minimized")
 update_terminal_activity(activity="Persisting minimized state across restarts")
 \`\`\`
 
-### ✅ THE GOAL ITSELF CHANGES → refine the GENERAL title (rare):
+### ✅ THE ORIGINAL GOAL EXPANDS → keep the title and update ACTIVITY:
 \`\`\`
-# The user expanded the feature, so the product goal genuinely changed:
-set_terminal_title(
-  title="Minimize & Restore",
-  long_title="Minimize agents and restore them later from a tray"
-)
+# The user expanded the same feature; the first title remains "Minimize Agents":
+update_terminal_activity(activity="Adding restore from the tray")
 \`\`\`
 
 ### ✅ RADICAL TOPIC CHANGE → set a NEW general title (mandatory):
@@ -866,7 +852,8 @@ set_terminal_title(
 User: "leave that, now let's prepare the release notes"
 set_terminal_title(
   title="Release Notes",
-  long_title="Preparing the release notes for the next version"
+  long_title="Preparing the release notes for the next version",
+  replace_existing=true
 )
 update_terminal_activity(activity="Drafting the release notes")
 # ❌ WRONG: calling only update_terminal_activity here — the tab would still
@@ -875,9 +862,8 @@ update_terminal_activity(activity="Drafting the release notes")
 
 ## ⚠️ WHEN TO USE WHICH
 
-- **General title (set_terminal_title):** once at the start; again when the overall
-  goal/feature changes or the topic changes radically. Aim for very few calls per
-  session — but NEVER leave a stale title on an agent that moved to another topic.
+- **General title (set_terminal_title):** once per conversation from the first request.
+  Replace only after a radical functionality pivot, with \`replace_existing=true\`.
 - **Current activity (update_terminal_activity):** every time you move to a new product
   step. Call it freely - it never disturbs the tab.
 
@@ -953,14 +939,14 @@ update_terminal_activity(activity="Investigating the output handler cost")    �
 **Bad 3 - Never setting a general title:**
 \`\`\`
 # Only calling update_terminal_activity, so the tab never gets a product label.
-✅ Always set_terminal_title ONCE at the start so the tab is meaningful.
+✅ Set the title ONCE from the first user request so the tab is meaningful.
 \`\`\`
 
 **Bad 4 - Radical topic change but the title never changes:**
 \`\`\`
 # Title: "Promo Video". The user then says: "now let's debug the login crash"
 update_terminal_activity(activity="Debugging the login crash")   ← ❌ tab still says "Promo Video"
-✅ set_terminal_title(title="Login Crash", long_title="Debugging the crash when logging in")
+✅ set_terminal_title(title="Login Crash", long_title="Debugging the crash when logging in", replace_existing=true)
 ✅ update_terminal_activity(activity="Reproducing the login crash")
 \`\`\`
 
@@ -975,26 +961,25 @@ set_terminal_title(title="Settings E2E Tests")   ← ❌ testing is a STEP of th
 
 ## 🚨 FINAL REMINDER
 
-- Set the **general title AND the GOAL once** at the start (\`set_terminal_title(title,
-  long_title)\` — always both); set them again when the goal changes or the topic pivots
-  radically — never leave a stale title.
+- Set the **general title AND GOAL once per conversation**, from the first user request.
+  Follow-ups never retitle; a radical functionality pivot uses \`replace_existing=true\`.
 - Keep the **current activity** flowing with \`update_terminal_activity\` (product-level),
   one short sentence per step.
 - The tab should stay stable; the hover + clock-button log carry the detail.
 - Do NOT create or manage tasks — automatic task management is disabled.
 
 **MEMORIZE:**
-1. **Start work → \`set_terminal_title(title, long_title)\` (ONCE, the tab label AND the GOAL sentence)**
+1. **First request → \`set_terminal_title(title, long_title)\` once**
 2. **New step → \`update_terminal_activity\` (product step)**
-3. **Goal changed or RADICAL topic change → \`set_terminal_title\` again (refined or NEW title)**
+3. **Radical functionality pivot → \`set_terminal_title(..., replace_existing=true)\`**
 4. **🏁 Finishing → final \`update_terminal_activity\` summary**
 
 ## Quick Decision Guide
 
 **Agent Title?**
-- ALWAYS set it immediately when starting work
-- Refine when the overall goal changes
-- Radical topic change → set a NEW title (don't leave a stale one)
+- Set it from the first user request, once per conversation
+- Follow-up work changes activity, never the title
+- Radical functionality pivot → replace with \`replace_existing=true\`
 
 **Tasks?**
 - Automatic task management is DISABLED — never create or manage tasks

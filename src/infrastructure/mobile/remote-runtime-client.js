@@ -91,6 +91,9 @@ const COMMAND_TYPES = new Set([
   'project.register',
   'project.clone',
   'project.clone.cancel',
+  'project.git.availability',
+  'project.icon.availability',
+  'project.icon.generate',
   'project.unregister',
   'tasks.list',
   'task.create',
@@ -902,9 +905,10 @@ class RemoteRuntimeClient {
       return;
     }
     if (message.kind === 'credential.renewed') {
-      if (!this.connection || Number(message.accessExpiresAt) !== this.connection.accessExpiresAt) {
-        return this._protocolFailure(socket);
-      }
+      const accessExpiresAt = Number(message.accessExpiresAt);
+      if (!this.connection
+        || !Number.isFinite(accessExpiresAt)
+        || Math.abs(accessExpiresAt - this.connection.accessExpiresAt) > 2_000) return;
       if (this.renewTimer) clearTimeout(this.renewTimer);
       this.renewTimer = null;
       this._diagnostic('remote.credential_renewed');

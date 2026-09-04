@@ -19,7 +19,7 @@ Task management is disabled in CodeAgentSwarm Settings. Do NOT create, start, or
 ### Agent Title + Activity (product-focused)
 
 Three things, all described at the PRODUCT level:
-- **General title** (sticky tab): set it ONCE at the start with `set_terminal_title(title, long_title)`. It names the FEATURE / functionality this agent works on (e.g. "Promo Video", "Minimize Agents"); keep it a bit high-level so the context stays clear, NOT a low-level step and NOT a work phase (testing, e2e, validating, reviewing, deploying) — running the e2e for a settings redesign keeps the title "Settings Redesign", never "Settings E2E Tests"; phases go in update_terminal_activity. Change it again only to refine when the overall goal changes, or to REPLACE it when the conversation pivots to a radically different topic — never leave a stale title while only updating the activity. Set it as your FIRST action so the agent is never without info; a manual rename always wins (the app keeps it).
+- **General title** (sticky tab): derive it from the **first user request** that established this conversation's functionality and set it ONCE per conversation with `set_terminal_title(title, long_title)`. It stays stable across follow-up messages, new turns, task changes, reviews, tests, validation, implementation phases, and context compaction; those change `update_terminal_activity`, not the title. Only when the user pivots this conversation to a completely different functionality call `set_terminal_title` again with `replace_existing=true`. Refining, extending, fixing, reviewing, or finishing the original request is not a radical pivot. Keep the title at the FEATURE level, never a work phase; a manual rename always wins.
 - **Goal** (hover, labelled GOAL): the SAME call carries it in `long_title` — one sentence on what this agent is FOR, the outcome the work aims at, not the step you are on. ALWAYS pass it: it is the only place that answers "why does this agent exist", and three words of title cannot. Write it in the user's language. Good: title "Orden notificación" + long_title "Que las notificaciones no salgan antes de que cambie el status del agente". Bad: a long_title that only repeats the title, or one prefixed "Working on:" — both are DISCARDED and the user then sees no goal at all; omitting it has the same effect.
 - **Current activity** (hover + activity log): call `update_terminal_activity(activity)` OFTEN, one short sentence per step framed at the PRODUCT/feature level (what it does for the user), NOT in technical/internal terms (avoid handler, function, class, module, hook). Bad: "Investigating the output handler cost". Good: "Investigating why agents feel slow". It does NOT change the tab.
 
@@ -33,7 +33,7 @@ LANGUAGE: write the title, the goal and the activity in the SAME language the us
 
 ```
 CORRECT:
-1. set_terminal_title(title, long_title)   <- once at the start: tab label + GOAL sentence
+1. set_terminal_title(title, long_title)   <- first request in this conversation only
 2. update_terminal_activity(activity=...)  <- before you act, then often as you work
 3. update_terminal_activity(activity=...)  <- a final summary when you finish
 ```
@@ -44,7 +44,7 @@ CORRECT:
 
 | Tool | Purpose |
 |------|---------|
-| `set_terminal_title` | Set the agent's general (sticky tab) title AND its GOAL (`long_title`), ONCE at the start |
+| `set_terminal_title` | Set the sticky title + GOAL once per conversation; replace only for a radical pivot |
 | `update_terminal_activity` | Log the current product-focused activity, often as you work |
 <!-- CAS:STATUS:START -->
 | `set_terminal_status` | Keep the work-phase status badge honest at every phase change |

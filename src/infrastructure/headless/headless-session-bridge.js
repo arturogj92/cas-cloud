@@ -119,7 +119,7 @@ function publicRemoteState(client) {
 }
 
 class HeadlessSessionBridge {
-  constructor({ runtime, remoteClient, peerRuntimeNetwork = null, dataPath, deliverMessage, createPairingLink = null, randomBytes = crypto.randomBytes } = {}) {
+  constructor({ runtime, remoteClient, peerRuntimeNetwork = null, dataPath, deliverMessage, listLocalSessions = null, readLocalTranscript = null, createPairingLink = null, randomBytes = crypto.randomBytes } = {}) {
     if (!runtime || !remoteClient || typeof deliverMessage !== 'function' || !path.isAbsolute(dataPath || '')) {
       throw new Error('CAS Cloud session bridge configuration is invalid');
     }
@@ -128,6 +128,8 @@ class HeadlessSessionBridge {
     this.peerRuntimeNetwork = peerRuntimeNetwork;
     this.dataPath = dataPath;
     this.deliverMessage = deliverMessage;
+    this.listLocalSessions = typeof listLocalSessions === 'function' ? listLocalSessions : null;
+    this.readLocalTranscript = typeof readLocalTranscript === 'function' ? readLocalTranscript : null;
     this.createPairingLink = createPairingLink;
     this.adminToken = randomBytes(32).toString('hex');
     this.sessionSecret = randomBytes(32);
@@ -377,11 +379,25 @@ class HeadlessSessionBridge {
             payload: {},
           }),
         })));
-        const sessions = results.flatMap((entry) => entry.status === 'fulfilled' ? (({ state, result }) => (
+        const localSessions = (this.listLocalSessions?.()?.sessions || []).flatMap((session) => (
+          session && typeof session.id === 'string' && session.id.length <= 128 ? [{
+            id: session.id,
+            name: clip(session.name, 120), agent: clip(session.agent, 60), project: clip(session.project, 160),
+            agent_id: clip(session.agent_id, 60), project_icon: clip(session.project_icon, 140),
+            project_color: clip(session.project_color, 32),
+            goal: clip(session.goal, 1200), activity: clip(session.activity, 500), status: clip(session.status, 80),
+            surface: session.surface === 'terminal' ? 'terminal' : 'chat',
+            state: ['working', 'needs_input'].includes(session.state) ? session.state : 'idle',
+            is_current: session.id === sourceSessionId,
+          }] : []
+        ));
+        const remoteSessions = results.flatMap((entry) => entry.status === 'fulfilled' ? (({ state, result }) => (
           (Array.isArray(result?.sessions) ? result.sessions : []).slice(0, 100).flatMap((session) => (
             session && typeof session.id === 'string' && session.id.length <= 128 ? [{
               id: encodeRemoteSessionId(state.runtime.id, session.id),
               name: clip(session.name, 120), agent: clip(session.agent, 60), project: clip(session.project, 160),
+              agent_id: clip(session.agent_id, 60), project_icon: clip(session.project_icon, 140),
+              project_color: clip(session.project_color, 32),
               goal: clip(session.goal, 1200), activity: clip(session.activity, 500), status: clip(session.status, 80),
               surface: session.surface === 'chat' ? 'chat' : 'terminal',
               state: ['working', 'needs_input'].includes(session.state) ? session.state : 'idle',
@@ -389,7 +405,7 @@ class HeadlessSessionBridge {
             }] : []
           ))
         ))(entry.value) : []);
-        return sendJson(response, 200, { sessions });
+        return sendJson(response, 200, { sessions: [...localSessions, ...remoteSessions] });
       } catch (_) {
         return sendJson(response, 503, { error: 'The paired Mac is offline' });
       }
@@ -400,6 +416,25 @@ class HeadlessSessionBridge {
       const limit = body.limit === undefined ? 30 : Number(body.limit);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 60) {
         return sendJson(response, 400, { error: 'Conversation limit must be between 1 and 60' });
+      }
+      if (this._sourceSession(body.target_session_id)) {
+        if (!this.readLocalTranscript) return sendJson(response, 503, { error: 'Conversation reading is unavailable' });
+        try {
+          const result = await this.readLocalTranscript({ targetSessionId: body.target_session_id, limit });
+          const snapshot = boundedConversationMessages(result?.messages, { limit });
+          return sendJson(response, 200, {
+            session: {
+              id: body.target_session_id,
+              name: clip(result?.session?.name, 120),
+              agent: clip(result?.session?.agent, 60),
+              project: clip(result?.session?.project, 160),
+            },
+            messages: snapshot.messages,
+            truncated: result?.truncated === true || snapshot.truncated,
+          });
+        } catch (_) {
+          return sendJson(response, 503, { error: 'The conversation could not be read' });
+        }
       }
       let target;
       try { target = decodeRemoteSessionId(body.target_session_id); }
@@ -444,12 +479,32 @@ class HeadlessSessionBridge {
       this._pruneReplies();
       if (messageType === 'response') {
         const pending = this.pendingReplies.get(body.reply_to_request_id);
-        if (!pending || pending.direction !== 'incoming'
+        if (!pending || !['incoming', 'local'].includes(pending.direction)
           || pending.sourceSessionId !== body.target_session_id
           || pending.targetSessionId !== sourceSessionId) {
           return sendJson(response, 409, { error: 'The response does not match an active session request' });
         }
         const source = this._sourceSession(sourceSessionId);
+        if (pending.direction === 'local') {
+          try {
+            const result = await this.deliverMessage({
+              targetSessionId: pending.sourceSessionId,
+              sourceSessionId,
+              sourceName: source?.title || `${source?.agent || 'CAS Cloud'} session`,
+              sourceAgent: source?.agent || source?.provider || 'agent',
+              message: body.message.trim(),
+              messageType: 'response',
+              communicationRequestId: body.reply_to_request_id,
+            });
+            this.pendingReplies.delete(body.reply_to_request_id);
+            return sendJson(response, 200, {
+              success: true,
+              status: result?.status === 'queued' ? 'queued' : 'delivered',
+            });
+          } catch (_) {
+            return sendJson(response, 503, { error: 'The session could not receive the response' });
+          }
+        }
         if (!pending.reply({
           sourceSessionId: pending.replyTargetSessionId,
           targetSessionId: pending.remoteSourceSessionId,
@@ -462,11 +517,41 @@ class HeadlessSessionBridge {
         this.pendingReplies.delete(body.reply_to_request_id);
         return sendJson(response, 200, { success: true, status: 'delivered' });
       }
+      if (body.target_session_id === sourceSessionId) {
+        return sendJson(response, 400, { error: 'A session cannot message itself' });
+      }
+      const source = this._sourceSession(sourceSessionId);
+      if (this._sourceSession(body.target_session_id)) {
+        const communicationRequestId = crypto.randomUUID();
+        this._rememberReply(communicationRequestId, {
+          direction: 'local',
+          sourceSessionId,
+          targetSessionId: body.target_session_id,
+        });
+        try {
+          const result = await this.deliverMessage({
+            targetSessionId: body.target_session_id,
+            sourceSessionId,
+            sourceName: source?.title || `${source?.agent || 'CAS Cloud'} session`,
+            sourceAgent: source?.agent || source?.provider || 'agent',
+            message: body.message.trim(),
+            messageType: 'request',
+            communicationRequestId,
+          });
+          return sendJson(response, 200, {
+            success: true,
+            status: result?.status === 'queued' ? 'queued' : 'delivered',
+            request_id: communicationRequestId,
+          });
+        } catch (_) {
+          this.pendingReplies.delete(communicationRequestId);
+          return sendJson(response, 503, { error: 'The session could not receive the request' });
+        }
+      }
       let target;
       try { target = decodeRemoteSessionId(body.target_session_id); }
       catch (error) { return sendJson(response, 400, { error: error.message }); }
       if (!this._remoteClient(target.runtimeId)) return sendJson(response, 404, { error: 'The remote session is unavailable' });
-      const source = this._sourceSession(sourceSessionId);
       const communicationRequestId = crypto.randomUUID();
       this._rememberReply(communicationRequestId, {
         direction: 'outgoing',

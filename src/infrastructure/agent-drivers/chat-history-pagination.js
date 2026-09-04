@@ -9,6 +9,7 @@ function conversationTimestampMs(value) {
 }
 
 function normalizeConversationMessages(messages) {
+  let internalTurn = false;
   return (Array.isArray(messages) ? messages : []).flatMap((message) => {
     const role = message?.role === 'assistant' ? 'assistant_message' : (
       message?.role === 'user' ? 'user_message' : null
@@ -16,7 +17,8 @@ function normalizeConversationMessages(messages) {
     const text = [message?.content, message?.text, message?.displayText]
       .find((value) => typeof value === 'string' && value.trim());
     const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
-    return role && (text || attachments.length) && !(role === 'user_message' && text && parseSessionCoordinationPrompt(text))
+    if (role === 'user_message') internalTurn = Boolean(text && parseSessionCoordinationPrompt(text));
+    return role && (text || attachments.length) && !internalTurn
       ? [{ role, text: text || '', attachments, timestamp: message.timestamp }]
       : [];
   });
@@ -74,14 +76,18 @@ function pageConversationMessages(messages, {
   before,
   anchor,
   knownCount = 0,
+  hydratedCount = 0,
   limit = DEFAULT_HISTORY_PAGE_SIZE
 } = {}) {
   const normalized = normalizeConversationMessages(messages);
   const safeLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : DEFAULT_HISTORY_PAGE_SIZE;
   const anchorIndex = findConversationAnchor(normalized, anchor);
+  // The newest `hydratedCount` rows reach the reader through its live session
+  // snapshot, so a page computed from an older, truncated view must stop there.
+  const hydratedEnd = Math.max(0, normalized.length - Math.max(0, Number(hydratedCount) || 0));
   const end = Number.isSafeInteger(before)
     ? Math.max(0, Math.min(before, normalized.length))
-    : (anchorIndex ?? Math.max(0, normalized.length - Math.max(0, Number(knownCount) || 0)));
+    : Math.min(hydratedEnd, anchorIndex ?? Math.max(0, normalized.length - Math.max(0, Number(knownCount) || 0)));
   const start = Math.max(0, end - safeLimit);
   return {
     messages: normalized.slice(start, end).map((message, offset) => ({

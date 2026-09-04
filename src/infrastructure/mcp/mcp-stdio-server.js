@@ -1239,6 +1239,20 @@ class MCPStdioServer {
         }
     }
 
+    _hasNudgeMarker(kind) {
+        try {
+            const os = require('os');
+            const fs = require('fs');
+            const stateDir = path.join(os.homedir(), '.codeagentswarm', 'terminal-nudge-state');
+            const rawKey = process.env.CODEAGENTSWARM_TERMINAL_ID
+                || process.env.CODEAGENTSWARM_CURRENT_QUADRANT;
+            const key = String(rawKey || '').replace(/[^A-Za-z0-9_-]/g, '_');
+            return !!key && fs.existsSync(path.join(stateDir, `${key}.${kind}`));
+        } catch (e) {
+            return false;
+        }
+    }
+
     // Resolve the current terminal id (1-based) from the environment.
     _getCurrentTerminalId() {
         const terminalId = process.env.CODEAGENTSWARM_CURRENT_QUADRANT;
@@ -1259,12 +1273,11 @@ class MCPStdioServer {
 
     // Set the GENERAL terminal title: the sticky tab label that represents the
     // product-level goal of what this terminal is working on. Set it ONCE at the
-    // start of work; call it again only to refine when the overall functionality
-    // changes, or to replace it when the terminal pivots to a radically different
-    // topic. It does NOT represent the current step — use update_terminal_activity
-    // for that.
+    // start of the conversation. Later calls preserve it unless the caller explicitly
+    // declares a radical topic change. It does NOT represent the current step — use
+    // update_terminal_activity for that.
     async setTerminalTitle(params) {
-        const { title, long_title } = params;
+        const { title, long_title, replace_existing } = params;
 
         if (!title) {
             throw new Error('title is required');
@@ -1274,10 +1287,23 @@ class MCPStdioServer {
             throw new Error(`"${title}" looks like example text copied from the tool documentation, not a real title. Call the tool again with a title that describes the ACTUAL feature or goal you are working on in this agent (max 6 words).`);
         }
 
+        if (replace_existing !== undefined && typeof replace_existing !== 'boolean') {
+            throw new Error('replace_existing must be a boolean');
+        }
+
+        const terminalId = this._getCurrentTerminalId();
+        if (replace_existing !== true && this._hasNudgeMarker('title')) {
+            return {
+                terminal_id: terminalId,
+                updated: false,
+                preserved: true,
+                message: 'The existing conversation title was preserved. Use update_terminal_activity for follow-up work; set replace_existing=true only after the user pivots to a completely different functionality.'
+            };
+        }
+
         // Generate short title (6 words) from provided title
         const shortTitle = this.generateShortTitle(title);
 
-        const terminalId = this._getCurrentTerminalId();
         const currentTask = this._getCurrentTask(terminalId);
         const taskId = currentTask ? currentTask.id : null;
 
@@ -2334,7 +2360,7 @@ class MCPStdioServer {
                 },
                 {
                     name: 'set_terminal_title',
-                    description: 'Set the GENERAL agent title AND the agent GOAL — pass BOTH arguments, because the user sees them together. `title` is the sticky Agent tab label at the FEATURE level (e.g. "Promo video for Twitter", "Minimize agents"); `long_title` is one sentence on what this agent is FOR, shown in the hover under the title. Keep the title high-level: name the feature, not a low-level step or work phase. Set it once at the start, then only refine it when the overall goal changes. Use update_terminal_activity for the current step. LANGUAGE: write BOTH in the SAME language the user is speaking.',
+                    description: 'Set the GENERAL agent title AND the agent GOAL from the first user request that established this conversation\'s topic. Pass BOTH text arguments because the user sees them together. This is once per conversation, NOT once per user message, turn, task, review, validation, or resumed session. Follow-up work belongs in update_terminal_activity and repeated calls preserve the original title. Only a user pivot to a completely different functionality may replace it, by passing replace_existing=true. LANGUAGE: write both text fields in the SAME language the user is speaking.',
                     inputSchema: {
                         type: 'object',
                         properties: {
@@ -2345,6 +2371,10 @@ class MCPStdioServer {
                             long_title: {
                                 type: 'string',
                                 description: 'The agent GOAL: one sentence saying what this agent is FOR — the outcome the work is aiming at, not the current step. ALWAYS provide it: the user reads it in the Agent hover, labelled GOAL, under the short title. Write the real goal in the user\'s language. Do NOT restate the title or prefix it with "Working on:".'
+                            },
+                            replace_existing: {
+                                type: 'boolean',
+                                description: 'Leave false or omit for normal follow-up work. Set true ONLY when the user explicitly pivots this existing conversation to a completely different functionality; reviews, tests, fixes, implementation phases, and refinements of the original request are activities and must not replace the title.'
                             }
                         },
                         // long_title is NOT in `required` on purpose: some agent clients
@@ -2880,7 +2910,8 @@ class MCPStdioServer {
             case 'set_terminal_title':
                 result = await this.setTerminalTitle({
                     title: args.title,
-                    long_title: args.long_title
+                    long_title: args.long_title,
+                    replace_existing: args.replace_existing
                 });
                 break;
 

@@ -106,6 +106,7 @@ class HeadlessProjectRegistry {
     onOperation = () => {},
     maxConcurrentClones = MAX_CLONES,
     stopTimeoutMs = 2_000,
+    platform = process.platform,
   }) {
     if (!database?.db) throw new Error('HeadlessProjectRegistry requires a SQLite database');
     this.database = database;
@@ -116,6 +117,7 @@ class HeadlessProjectRegistry {
     this.onOperation = onOperation;
     this.maxConcurrentClones = maxConcurrentClones;
     this.stopTimeoutMs = stopTimeoutMs;
+    this.platform = platform;
     this.stopping = false;
     this.running = new Map();
     this.queue = [];
@@ -303,8 +305,8 @@ class HeadlessProjectRegistry {
     }
     const effectiveUid = typeof process.geteuid === 'function' ? process.geteuid() : null;
     if (!stat.isDirectory()
-      || (effectiveUid !== null && stat.uid !== effectiveUid)
-      || (stat.mode & 0o022) !== 0) {
+      || (this.platform !== 'win32' && ((effectiveUid !== null && stat.uid !== effectiveUid)
+        || (stat.mode & 0o022) !== 0))) {
       throw runtimeError('clone_root_insecure', 'The configured clone root is not secure');
     }
     return stat;
@@ -356,6 +358,40 @@ class HeadlessProjectRegistry {
   getRoots() {
     return this.db.prepare('SELECT root_id, name FROM runtime_project_roots ORDER BY created_at, root_id').all()
       .map((root) => ({ rootId: root.root_id, name: String(root.name).slice(0, 200) }));
+  }
+
+  gitAvailability() {
+    return new Promise((resolve) => {
+      let child;
+      let output = '';
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => {
+        try { child?.kill(); } catch (_) {}
+        finish({ available: false });
+      }, 2_000);
+      timer.unref?.();
+      try {
+        child = this.spawnImpl('git', ['--version'], {
+          shell: false,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+        });
+        child.stdout?.on('data', (chunk) => { output = `${output}${String(chunk)}`.slice(0, 200); });
+        child.once('error', () => finish({ available: false }));
+        child.once('close', (code) => {
+          const version = /^git version\s+([^\s]+)/i.exec(output.trim())?.[1];
+          finish(code === 0 ? { available: true, ...(version ? { version } : {}) } : { available: false });
+        });
+      } catch (_) {
+        finish({ available: false });
+      }
+    });
   }
 
   listDirectories({ rootId, relativePath = '.' } = {}) {
@@ -792,6 +828,7 @@ module.exports = {
   contained,
   runtimeError,
   validateGitUrl,
+  cloneDirectoryName,
   validateCloneChildName,
   validateRelativePath,
 };

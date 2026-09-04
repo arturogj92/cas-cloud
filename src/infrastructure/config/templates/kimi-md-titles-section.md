@@ -22,16 +22,15 @@ Task management is disabled in CodeAgentSwarm Settings. Do NOT create, start, or
 (read, grep, bash, image gen, web search, file writes, MCP discovery for non-title work, etc.):
 
 ```
-1. set_terminal_title(title, long_title)   <- sticky tab + GOAL (ALWAYS both args)
+1. On the conversation's first request only: set_terminal_title(title, long_title)
 <!-- CAS:STATUS:START -->
 2. set_terminal_status("working")          <- work-phase badge
 <!-- CAS:STATUS:END -->
-3. update_terminal_activity(activity=...)  <- first product-focused step
+3. On every request: update_terminal_activity(activity=...) for the current step
 ```
 
-**This bootstrap is MANDATORY for every request** — research, answering questions,
-brainstorming, design, generating images, one-line advice, reading code. Skipping
-title/goal/activity while working is a failure.
+The title/goal call is mandatory only for the first request that establishes the
+conversation topic. On later requests, keep the existing title and update status/activity.
 
 Batch the bootstrap calls in the **same first tool round** as `check_active` when
 possible (or immediately after it). Do not start real work until they succeed.
@@ -41,7 +40,7 @@ LANGUAGE: write title, goal (`long_title`) and activity in the SAME language the
 ### Agent Title + Activity (product-focused)
 
 Three things, all described at the PRODUCT level:
-- **General title** (sticky tab): set it ONCE at the start with `set_terminal_title(title, long_title)`. It names the FEATURE / functionality this agent works on (e.g. "Promo Video", "Minimize Agents"); keep it a bit high-level so the context stays clear, NOT a low-level step and NOT a work phase (testing, e2e, validating, reviewing, deploying) — running the e2e for a settings redesign keeps the title "Settings Redesign", never "Settings E2E Tests"; phases go in update_terminal_activity. Change it again only to refine when the overall goal changes, or to REPLACE it when the conversation pivots to a radically different topic — never leave a stale title while only updating the activity. Set it as your FIRST action so the agent is never without info; a manual rename always wins (the app keeps it).
+- **General title** (sticky tab): derive it from the **first user request** that established this conversation's functionality and set it ONCE per conversation with `set_terminal_title(title, long_title)`. It stays stable across follow-up messages, new turns, task changes, reviews, tests, validation, implementation phases, and context compaction; those change `update_terminal_activity`, not the title. Only when the user pivots this conversation to a completely different functionality call `set_terminal_title` again with `replace_existing=true`. Refining, extending, fixing, reviewing, or finishing the original request is not a radical pivot. Keep the title at the FEATURE level, never a work phase; a manual rename always wins.
 - **Goal** (hover, labelled GOAL): the SAME call carries it in `long_title` — one sentence on what this agent is FOR, the outcome the work aims at, not the step you are on. ALWAYS pass it: it is the only place that answers "why does this agent exist", and three words of title cannot. Write it in the user's language. Good: title "Orden notificación" + long_title "Que las notificaciones no salgan antes de que cambie el status del agente". Bad: a long_title that only repeats the title, or one prefixed "Working on:" — both are DISCARDED and the user then sees no goal at all; omitting it has the same effect.
 - **Current activity** (hover + activity log): call `update_terminal_activity(activity)` OFTEN, one short sentence per step framed at the PRODUCT/feature level (what it does for the user), NOT in technical/internal terms (avoid handler, function, class, module, hook). Bad: "Investigating the output handler cost". Good: "Investigating why agents feel slow". It does NOT change the tab.
 
@@ -54,9 +53,9 @@ Do NOT keep renaming the tab every few minutes; use `update_terminal_activity` f
 LANGUAGE: write the title, the goal and the activity in the SAME language the user is speaking (e.g. Spanish if the user writes in Spanish).
 
 ```
-CORRECT (every request — research, questions, design, advice):
+CORRECT:
 1. check_active
-2. set_terminal_title(title, long_title)   <- once at the start: tab label + GOAL sentence
+2. set_terminal_title(title, long_title)   <- first request in this conversation only
 <!-- CAS:STATUS:START -->
 3. set_terminal_status("working")
 <!-- CAS:STATUS:END -->
@@ -71,7 +70,7 @@ CORRECT (every request — research, questions, design, advice):
 | Tool | Purpose |
 |------|---------|
 | `check_active` | Gate: only use CAS tools when inside CodeAgentSwarm |
-| `set_terminal_title` | Set the agent's general (sticky tab) title AND its GOAL (`long_title`), ONCE at the start |
+| `set_terminal_title` | Set the sticky title + GOAL once per conversation; replace only for a radical pivot |
 | `update_terminal_activity` | Log the current product-focused activity, often as you work |
 <!-- CAS:STATUS:START -->
 | `set_terminal_status` | Keep the work-phase status badge honest at every phase change |
@@ -79,11 +78,11 @@ CORRECT (every request — research, questions, design, advice):
 
 ### MEMORIZE (every session)
 
-1. **Start work** → `check_active` then `set_terminal_title(title, long_title)` + `update_terminal_activity` **before any other tool**
+1. **First request** → `check_active`, then `set_terminal_title(title, long_title)` once
 <!-- CAS:STATUS:START -->
 2. **Also set status** → `set_terminal_status("working")` at start; update on every phase change (`needs_input` / `needs_testing` / `done`)
 <!-- CAS:STATUS:END -->
-3. **New step** → `update_terminal_activity` (product step)
-4. **Radical topic change** → new `set_terminal_title` (never leave a stale tab)
+3. **Every request/new step** → `update_terminal_activity` (product step), never retitle
+4. **Radical topic change** → `set_terminal_title(..., replace_existing=true)`
 
 <!-- CODEAGENTSWARM GLOBAL CONFIG END -->

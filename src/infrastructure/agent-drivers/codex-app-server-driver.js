@@ -69,7 +69,6 @@ const REASONING_EFFORT_LABELS = Object.freeze({
 const DEFAULT_SERVICE_TIER_ID = 'default';
 const EPHEMERAL_CODEX_HOME_PREFIX = 'codeagentswarm-codex-home-';
 const EPHEMERAL_CODEX_HOME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const REQUIRED_TASK_MCP_TOOL = 'check_active';
 const TEXT_ONLY_INSTRUCTIONS = 'Answer with plain text only. Do not call tools, commands, apps, skills, web search, MCP servers, or subagents.';
 const IMAGE_ONLY_INSTRUCTIONS = 'Generate exactly one image with the built-in image generation capability. Do not call commands, apps, skills, web search, MCP servers, subagents, or any other tool. Do not return prose.';
 const TEXT_ONLY_CONFIG_OVERRIDES = Object.freeze([
@@ -266,10 +265,6 @@ class CodexAppServerDriver extends EventEmitter {
    * @param {{name: string, title: string, version: string}} [options.clientInfo]
    * @param {number} [options.requestTimeoutMs=30000] Per-request timeout.
    * @param {Function} [options.spawnFn] Injectable spawn, for tests.
-   * @param {string} [options.requiredMcpServer] MCP server whose activation
-   *   check is repaired before the first turn when possible.
-   * @param {Function} [options.repairMcpConfig] Repairs the on-disk MCP config
-   *   before the running app-server reloads it.
    * @param {{register: Function, unregister: Function}} [options.processRegistry]
    *   PID registry the child is tracked in; injectable for tests.
    */
@@ -279,9 +274,7 @@ class CodexAppServerDriver extends EventEmitter {
     clientInfo,
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     spawnFn,
-    processRegistry,
-    requiredMcpServer,
-    repairMcpConfig
+    processRegistry
   } = {}) {
     super();
     this._binaryPath = binaryPath;
@@ -290,8 +283,6 @@ class CodexAppServerDriver extends EventEmitter {
     this._requestTimeoutMs = requestTimeoutMs;
     this._spawnFn = spawnFn || spawn;
     this._processRegistry = processRegistry || require('../platform/spawned-process-registry');
-    this._requiredMcpServer = requiredMcpServer || null;
-    this._repairMcpConfig = repairMcpConfig || null;
 
     this._child = null;
     this._pendingRequests = new Map();
@@ -946,7 +937,7 @@ class CodexAppServerDriver extends EventEmitter {
           initialTurnsPage: {
             limit: INITIAL_HISTORY_TURN_PAGE_SIZE,
             sortDirection: 'desc',
-            itemsView: 'summary'
+            itemsView: 'full'
           },
           ...threadParams
         });
@@ -977,13 +968,14 @@ class CodexAppServerDriver extends EventEmitter {
     }
 
     this._threadId = result?.thread?.id || result?.threadId || (resumeSessionId || null);
-    if (!toolsDisabled && !imageGenerationOnly) {
-      try {
-        await this._ensureRequiredMcpServer(this._threadId);
-      } catch (error) {
-        console.warn(`[CodexAppServerDriver] Continuing without verified task MCP tools: ${error.message}`);
-      }
-    }
+    // Deliberately no MCP inventory check here. The app repairs its own
+    // `codeagentswarm-tasks` entry before every Codex spawn
+    // (ProviderAccountRegistry.env -> verifyAndFixClaudeConfig, honouring the
+    // per-agent MCP toggle), while `mcpServerStatus/list` blocks until EVERY
+    // configured MCP server started (3-5s alone, 17s with four concurrent
+    // restores, 30s with one hung server), which made Codex restores far
+    // slower than Claude. See
+    // docs/diagnostics/codex-chat-restore-waits-for-mcp-inventory.md.
     this._sessionCwd = result?.cwd || result?.thread?.cwd || cwd;
     let historyPage = result?.initialTurnsPage;
     const returnedTurns = Array.isArray(result?.thread?.turns) ? result.thread.turns : [];
@@ -993,7 +985,7 @@ class CodexAppServerDriver extends EventEmitter {
           threadId: this._threadId,
           limit: INITIAL_HISTORY_TURN_PAGE_SIZE,
           sortDirection: 'desc',
-          itemsView: 'summary'
+          itemsView: 'full'
         });
       } catch (_) {
         // Older/custom app-servers may not expose experimental pagination.
@@ -1052,20 +1044,6 @@ class CodexAppServerDriver extends EventEmitter {
       cursor = nextCursor;
     } while (cursor);
     return servers;
-  }
-
-  async _ensureRequiredMcpServer(threadId) {
-    if (!this._requiredMcpServer) return;
-    const connected = (servers) => servers.some((server) => (
-      server?.name === this._requiredMcpServer
-      && Object.values(server.tools || {}).some((tool) => tool?.name === REQUIRED_TASK_MCP_TOOL)
-    ));
-    if (connected(await this._listMcpServers(threadId))) return;
-
-    if (this._repairMcpConfig && await this._repairMcpConfig() === false) {
-      throw new Error('CodeAgentSwarm could not repair the Codex MCP configuration. Restart CodeAgentSwarm and retry Chat.');
-    }
-    await this._request('config/mcpServer/reload', null);
   }
 
   /**

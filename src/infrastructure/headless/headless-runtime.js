@@ -55,6 +55,7 @@ const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'project.register',
   'project.clone',
   'project.clone.cancel',
+  'project.git.availability',
   'project.unregister',
   'shortcuts.manage',
   'session.action',
@@ -578,7 +579,10 @@ function createHeadlessHost({
           id: session.terminalUuid,
           name: session.title || `${session.agent || 'Agent'} session`,
           agent: session.agent || session.provider || '',
+          agent_id: session.agent || session.provider || '',
           project: session.project?.name || '',
+          project_icon: session.project?.icon || '',
+          project_color: session.project?.color || '',
           goal: session.goal || '',
           activity: session.activity || '',
           status: session.workStatus || '',
@@ -871,6 +875,7 @@ function createHeadlessHost({
     registerProject: (payload) => registry.register(payload),
     cloneProject: (payload) => registry.clone(payload),
     cancelProjectClone: (payload) => registry.cancelClone(payload),
+    gitAvailability: () => registry.gitAvailability(),
     unregisterProject: (payload) => {
       const busy = startingProjects.has(payload.projectId) || Array.from(runtime.sessions.values()).some((session) => (
         session.project?.projectId === payload.projectId && session.state !== 'stopped'
@@ -935,6 +940,8 @@ function createHeadlessHost({
     peerRuntimeNetwork,
     dataPath: resolvedDataPath,
     deliverMessage: deliverCoordinatedMessage,
+    listLocalSessions: listCoordinatedSessions,
+    readLocalTranscript: readCoordinatedTranscript,
     createPairingLink: async () => {
       const pairing = await relay.createPairing();
       return { url: desktopConnectionLink(pairing), expiresAt: pairing.expiresAt };

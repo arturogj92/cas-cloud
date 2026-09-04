@@ -25,6 +25,7 @@ const { projectPathsMatch } = require('../services/claude-project-path-resolver'
 const { parseSessionCoordinationPrompt } = require('../../shared/parsers/session-coordination-message');
 const {
   conversationMessagesToEvents,
+  normalizeConversationMessages,
   pageConversationMessages
 } = require('../agent-drivers/chat-history-pagination');
 
@@ -371,6 +372,7 @@ class MobileRuntime {
     listProjectDirectories = null,
     createProject = null,
     updateProject = null,
+    gitAvailability = null,
     projectIconAvailability = null,
     generateProjectIcon = null,
     registerProject = null,
@@ -440,6 +442,7 @@ class MobileRuntime {
     this.listProjectDirectories = listProjectDirectories;
     this.createProject = createProject;
     this.updateProject = updateProject;
+    this.gitAvailability = gitAvailability;
     this.projectIconAvailability = projectIconAvailability;
     this.generateProjectIcon = generateProjectIcon;
     this.registerProject = registerProject;
@@ -586,6 +589,7 @@ class MobileRuntime {
       accountLabel: session.accountLabel,
       threadId: session.threadId,
       terminalUuid: session.terminalUuid,
+      communicationEnabled: session.communicationEnabled === true,
       terminalOrder: session.terminalOrder,
       cwd: session.cwd,
       model: session.model,
@@ -935,6 +939,8 @@ class MobileRuntime {
   }
 
   publishProjectIconEvent(event = {}) {
+    const iconDataUrl = typeof event.iconDataUrl === 'string' && event.iconDataUrl.length <= 100_000
+      ? event.iconDataUrl : null;
     return this._publish('project.icon.generated', {
       jobId: cleanText(event.jobId, 100),
       projectId: cleanText(event.projectId, 128),
@@ -942,6 +948,8 @@ class MobileRuntime {
       applied: event.applied === true,
       unavailable: event.unavailable === true,
       ...(cleanText(event.error, 500) ? { error: cleanText(event.error, 500) } : {}),
+      ...(cleanText(event.icon, 300) ? { icon: cleanText(event.icon, 300) } : {}),
+      ...(iconDataUrl ? { iconDataUrl } : {}),
     });
   }
 
@@ -1003,6 +1011,7 @@ class MobileRuntime {
       accountLabel: started.accountLabel || null,
       threadId: started.threadId,
       terminalUuid: started.terminalUuid,
+      communicationEnabled: started.communicationEnabled === true,
       terminalOrder: Number.isSafeInteger(started.terminalId) && started.terminalId > 0 ? started.terminalId : null,
       desktopTerminalId: Number.isSafeInteger(started.terminalId) && started.terminalId > 0 ? started.terminalId : null,
       cwd: started.cwd,
@@ -1028,6 +1037,7 @@ class MobileRuntime {
         accountLabel: started.accountLabel || null,
         threadId: started.threadId,
         terminalUuid: started.terminalUuid,
+        communicationEnabled: started.communicationEnabled === true,
         terminalOrder: Number.isSafeInteger(started.terminalId) && started.terminalId > 0 ? started.terminalId : null,
         cwd: started.cwd,
         model: started.model,
@@ -1083,12 +1093,10 @@ class MobileRuntime {
       return;
     }
     if (!Array.isArray(messages) || !messages.length) return;
-    const recent = messages.slice(-200);
+    const recent = normalizeConversationMessages(messages).slice(-200);
     recent.forEach((message, index) => {
-      const role = message?.role === 'assistant' ? 'assistant_message' : (
-        message?.role === 'user' ? 'user_message' : null
-      );
-      const text = cleanText(message?.content ?? message?.text ?? message?.displayText, MAX_INITIAL_PROMPT_CHARS);
+      const role = message.role;
+      const text = cleanText(message.text, MAX_INITIAL_PROMPT_CHARS);
       const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
       if (!role || (!text && !attachments.length)) return;
       const key = `${role}\0${text}`;
@@ -1392,6 +1400,7 @@ class MobileRuntime {
         accountLabel: null,
         threadId: null,
         terminalUuid: null,
+        communicationEnabled: false,
         terminalOrder: null,
         desktopTerminalId: null,
         cwd: null,
@@ -1774,10 +1783,15 @@ class MobileRuntime {
       this.publishProjects();
       return result;
     }
+    if (command.type === 'project.git.availability') {
+      if (typeof this.gitAvailability !== 'function') return { available: false };
+      exactPayload(['rootId']);
+      return this.gitAvailability({ rootId: cleanText(payload.rootId, 128) });
+    }
     if (command.type === 'project.icon.availability') {
       if (typeof this.projectIconAvailability !== 'function') return { available: false };
-      exactPayload([]);
-      return this.projectIconAvailability();
+      exactPayload(['projectId']);
+      return this.projectIconAvailability({ projectId: cleanText(payload.projectId, 128) });
     }
     if (command.type === 'project.icon.generate') {
       if (typeof this.generateProjectIcon !== 'function') throw new Error('Codex icon generation is unavailable');
@@ -1791,7 +1805,9 @@ class MobileRuntime {
     if (command.type === 'project.register') {
       if (typeof this.registerProject !== 'function') throw new Error('Remote project registration is unavailable');
       exactPayload(['rootId', 'relativePath', 'requestId']);
-      return this.registerProject({ rootId: payload.rootId, relativePath: payload.relativePath, requestId: mutationRequestId() });
+      const result = await this.registerProject({ rootId: payload.rootId, relativePath: payload.relativePath, requestId: mutationRequestId() });
+      this.publishProjects();
+      return result;
     }
     if (command.type === 'project.clone') {
       if (typeof this.cloneProject !== 'function') throw new Error('Remote project cloning is unavailable');
@@ -2095,6 +2111,12 @@ class MobileRuntime {
           agent: session.agent
         });
         const knownCount = Array.from(session.items.values()).filter(isConversationItem).length;
+        // A subscribed client receives this session's bounded snapshot on subscribe. Its own
+        // knownCount can still describe the truncated welcome it asked from, so the page must
+        // end before the rows that hydration delivers or they show up twice.
+        const hydratedCount = context.client?.subscriptions?.has(sessionId)
+          ? this._subscriptionSnapshot(session).items.filter(isConversationItem).length
+          : 0;
         const page = pageConversationMessages(messages, {
           before: Number.isSafeInteger(payload.before) ? payload.before : undefined,
           anchor: payload.anchor && typeof payload.anchor === 'object' ? {
@@ -2103,6 +2125,7 @@ class MobileRuntime {
             timestamp: cleanText(payload.anchor.timestamp, 64)
           } : null,
           knownCount: Number.isSafeInteger(payload.knownCount) ? payload.knownCount : knownCount,
+          hydratedCount,
           limit: 30
         });
         const events = conversationMessagesToEvents(page.messages, {

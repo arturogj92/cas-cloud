@@ -68,22 +68,16 @@ function waitForStart(promise, signal) {
  * Default driver factory. `agent` is validated upstream by `startSession`, so
  * the factory only has to pick between the drivers wired into chat today.
  *
- * @param {{ agent: string, env: Object, binaryPath?: string,
- *   requiredMcpServer?: string, repairMcpConfig?: Function }} options
+ * @param {{ agent: string, env: Object, binaryPath?: string }} options
  * @returns {CodexAppServerDriver|ClaudeAgentSdkDriver|AcpAgentDriver}
  */
-function defaultCreateDriver({ agent, env, binaryPath, requiredMcpServer, repairMcpConfig }) {
+function defaultCreateDriver({ agent, env, binaryPath }) {
   if (agent === 'claude') return new ClaudeAgentSdkDriver({ env, binaryPath });
   if (agent === 'antigravity') return new AntigravityPrintDriver({ env, binaryPath });
   if (agent === 'opencode' || agent === 'kimi' || agent === 'grok' || agent === 'cursor') {
     return new AcpAgentDriver({ provider: agent, env, binaryPath });
   }
-  return new CodexAppServerDriver({
-    env,
-    binaryPath,
-    requiredMcpServer,
-    repairMcpConfig
-  });
+  return new CodexAppServerDriver({ env, binaryPath });
 }
 
 class DriverChatManager extends EventEmitter {
@@ -401,6 +395,7 @@ class DriverChatManager extends EventEmitter {
         // main-process placeholder, so return that same UUID for persistence
         // and instance-safe MCP notification routing.
         terminalUuid: env.CODEAGENTSWARM_TERMINAL_ID || null,
+        communicationEnabled: env.CODEAGENTSWARM_SESSION_COMMUNICATION_ENABLED === '1',
         model: session.model,
         effort: session.effort || resolvedEffort,
         serviceTier: session.serviceTier
