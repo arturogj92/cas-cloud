@@ -9,6 +9,7 @@ const {
 
 const PROTOCOL_VERSION = 2;
 const SESSION_SUBSCRIPTIONS_FEATURE = 'session-subscriptions';
+const SNAPSHOT_PROJECT_ICONS_FEATURE = 'snapshot-project-icons';
 const MAX_PAIRING_INPUT_LENGTH = 8192;
 const MAX_RUNTIME_MESSAGE_BYTES = 1024 * 1024;
 const MAX_RESET_SNAPSHOT_BYTES = 256 * 1024;
@@ -73,6 +74,7 @@ const COMMAND_TYPES = new Set([
   'turn.send',
   'turn.interrupt',
   'session.stop',
+  'session.restart',
   'session.models',
   'session.configure',
   'session.subscribe',
@@ -546,6 +548,7 @@ class RemoteRuntimeClient {
     this.reconnectAttempt = 0;
     this.reconnectTimer = null;
     this.openTimer = null;
+    this.runtimeWaitTimer = null;
     this.heartbeatTimer = null;
     this.pongTimer = null;
     this.refreshTimer = null;
@@ -895,6 +898,7 @@ class RemoteRuntimeClient {
     if (message.kind === 'pair.challenge') return this._handlePairChallenge(message);
     if (message.kind === 'pair.completed') return this._handlePairCompleted(socket, message);
     if (message.kind === 'hello.accepted') {
+      if (this.connection && !this.pairing) this._waitForRuntime();
       if (this.connectTrace) this.connectTrace.authenticatedAt = this.now();
       this._diagnostic('remote.relay_authenticated', {
         mode: this.pairing ? 'pairing' : 'runtime',
@@ -924,6 +928,8 @@ class RemoteRuntimeClient {
       return;
     }
     if (message.kind === 'runtime.offline') {
+      clearTimeout(this.runtimeWaitTimer);
+      this.runtimeWaitTimer = null;
       this.runtimeOnline = false;
       this.resyncPending = false;
       this.subscriptionsSupported = false;
@@ -1045,6 +1051,7 @@ class RemoteRuntimeClient {
   _handleRuntimeEnvelope(envelope) {
     let safe;
     let bytes;
+    let snapshotBytes;
     try {
       bytes = Buffer.byteLength(JSON.stringify(envelope));
       if (!envelope || typeof envelope !== 'object' || bytes > MAX_RUNTIME_MESSAGE_BYTES) {
@@ -1052,8 +1059,29 @@ class RemoteRuntimeClient {
       }
       assertPublicPayload(envelope);
       if (envelope.kind === 'welcome' && envelope.reset === true) {
-        if (!envelope.snapshot || typeof envelope.snapshot !== 'object' || Buffer.byteLength(JSON.stringify(envelope.snapshot)) > MAX_RESET_SNAPSHOT_BYTES) {
+        snapshotBytes = envelope.snapshot ? Buffer.byteLength(JSON.stringify(envelope.snapshot)) : 0;
+        if (!envelope.snapshot || typeof envelope.snapshot !== 'object' || snapshotBytes > MAX_RESET_SNAPSHOT_BYTES) {
           throw new Error('Invalid runtime snapshot');
+        }
+        if (Array.isArray(envelope.features) && envelope.features.includes(SNAPSHOT_PROJECT_ICONS_FEATURE)) {
+          const projects = envelope.snapshot.projects;
+          let expandedBytes = bytes;
+          envelope = { ...envelope, snapshot: {
+            ...envelope.snapshot,
+            sessions: (envelope.snapshot.sessions || []).map((session) => {
+              if (!Object.hasOwn(session.project || {}, 'projectIconIndex')) return session;
+              const { projectIconIndex, ...project } = session.project;
+              const source = Array.isArray(projects) && Number.isSafeInteger(projectIconIndex) && projectIconIndex >= 0
+                ? projects?.[projectIconIndex] : null;
+              if (!source || typeof source.path !== 'string' || source.path !== project.path || typeof source.iconDataUrl !== 'string') {
+                throw new Error('Invalid runtime project icon reference');
+              }
+              const restored = { ...project, iconDataUrl: source.iconDataUrl };
+              expandedBytes += Buffer.byteLength(JSON.stringify(restored)) - Buffer.byteLength(JSON.stringify(session.project));
+              if (expandedBytes > MAX_RUNTIME_MESSAGE_BYTES) throw new Error('Expanded runtime snapshot is too large');
+              return { ...session, project: restored };
+            }),
+          } };
         }
       }
       const commandType = envelope.kind === 'command.result'
@@ -1064,7 +1092,7 @@ class RemoteRuntimeClient {
       const kind = typeof envelope?.kind === 'string' && /^[a-z][a-z0-9.]{0,63}$/.test(envelope.kind)
         ? envelope.kind
         : undefined;
-      this._diagnostic('remote.runtime_rejected', { reason: 'invalid_envelope', kind });
+      this._diagnostic('remote.runtime_rejected', { reason: 'invalid_envelope', kind, bytes, snapshotBytes });
       return this._protocolFailure(this.socket);
     }
     if (safe.kind === 'command.accepted') {
@@ -1112,6 +1140,8 @@ class RemoteRuntimeClient {
         this._setState({ ...this.state, phase: 'online', lastEnvelope: safe, error: null });
       }
       this.reconnectAttempt = 0;
+      clearTimeout(this.runtimeWaitTimer);
+      this.runtimeWaitTimer = null;
       this._diagnostic('remote.runtime_synced', {
         totalMs: this.connectTrace ? this.now() - this.connectTrace.startedAt : undefined,
         reset: safe.reset === true,
@@ -1176,11 +1206,12 @@ class RemoteRuntimeClient {
   _sendRuntimeHello(withCursor = true) {
     const cursor = withCursor ? this.state.cursor : null;
     this._setState({ ...this.state, phase: 'syncing' });
+    this._waitForRuntime();
     const sent = this._sendRuntime({
       kind: 'hello',
       protocolVersion: PROTOCOL_VERSION,
       accepts: ['deflate'],
-      features: [SESSION_SUBSCRIPTIONS_FEATURE],
+      features: [SESSION_SUBSCRIPTIONS_FEATURE, SNAPSHOT_PROJECT_ICONS_FEATURE],
       subscriptions: [...this.subscriptions],
       ...(cursor ? { cursor } : {}),
     });
@@ -1193,6 +1224,17 @@ class RemoteRuntimeClient {
     if (this.resyncPending) return;
     this.resyncPending = true;
     this._sendRuntimeHello(false);
+  }
+
+  _waitForRuntime() {
+    if (this.runtimeWaitTimer) return;
+    this.runtimeWaitTimer = setTimeout(() => {
+      this.runtimeWaitTimer = null;
+      if (!['connecting', 'syncing'].includes(this.state.phase)) return;
+      // Keep the authenticated socket: a late welcome can still recover without a retry loop.
+      this._diagnostic('remote.runtime_wait_timeout');
+      this._setState({ ...this.state, phase: 'offline', error: 'The remote computer did not respond' });
+    }, this.timeouts.open);
   }
 
   _sendRuntime(payload) {
@@ -1458,6 +1500,8 @@ class RemoteRuntimeClient {
   }
 
   _closeSocket(close = true) {
+    clearTimeout(this.runtimeWaitTimer);
+    this.runtimeWaitTimer = null;
     if (this.openTimer) clearTimeout(this.openTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.pongTimer) clearTimeout(this.pongTimer);

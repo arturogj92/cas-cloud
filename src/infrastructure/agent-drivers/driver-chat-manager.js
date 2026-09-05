@@ -212,11 +212,10 @@ class DriverChatManager extends EventEmitter {
     useWorktree = false,
     worktreeTitle,
     clientRequestId
-  } = {}, { signal } = {}) {
+  } = {}, { signal, sessionId = crypto.randomUUID() } = {}) {
     if (!SUPPORTED_AGENTS.includes(agent)) {
       throw new Error(`Unsupported driver chat agent: ${agent}`);
     }
-    const sessionId = crypto.randomUUID();
     if (clientRequestId) {
       this.emit(SESSION_STARTING, {
         sessionId,
@@ -779,6 +778,12 @@ class DriverChatManager extends EventEmitter {
     });
     await this._teardownSession(sessionId);
     return { stopped: true };
+  }
+
+  /** Replace the process while keeping the host-owned conversation identity. */
+  async restartSession(sessionId, options) {
+    await this._teardownSession(sessionId);
+    return this.startSession(options, { sessionId });
   }
 
   /**

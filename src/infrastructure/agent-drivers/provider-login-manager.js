@@ -18,6 +18,7 @@
 
 const EventEmitter = require('events');
 const { spawn } = require('child_process');
+const { randomUUID } = require('crypto');
 const { LOGIN_MODES, loginStrategyForAgent } = require('./provider-login');
 const { isNativeExe, quoteForCmd } = require('../platform/windows-direct-spawn');
 
@@ -49,7 +50,6 @@ class ProviderLoginManager extends EventEmitter {
     // exercised against a real child process instead of a mocked spawn.
     this._resolveStrategy = resolveStrategy || loginStrategyForAgent;
     this._timeoutMs = timeoutMs || DEFAULT_TIMEOUT_MS;
-    this._nextId = 0;
     /** @type {Map<string, Object>} loginId -> live flow. */
     this._flows = new Map();
     // Injected spawners are unit-test fakes; only real children need reaping.
@@ -80,7 +80,7 @@ class ProviderLoginManager extends EventEmitter {
 
     const [defaultBinary, ...args] = strategy.command;
     const binary = (await this._resolveBinary({ agent })) || defaultBinary;
-    const loginId = `login-${++this._nextId}`;
+    const loginId = `login-${randomUUID()}`;
 
     const child = this._spawnCommand(binary, args, {
       env,

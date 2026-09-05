@@ -83,12 +83,11 @@ const PROVIDER_LOGIN = Object.freeze({
     verified: '2026-08-10 · opencode 1.18.11'
   },
   kimi: {
-    mode: LOGIN_MODES.MANUAL,
+    mode: LOGIN_MODES.CLI,
     label: 'Kimi Code',
     command: ['kimi', 'login'],
-    terminalHint: '/login',
-    reason: 'Kimi\'s sign-in has not been observed outside its own interface, so CodeAgentSwarm will not pretend to drive it.',
-    verified: null
+    acceptsCode: false,
+    verified: '2026-09-04 · kimi 0.36.1; device flow captured on 0.38.0'
   },
   antigravity: {
     mode: LOGIN_MODES.UNAVAILABLE,
@@ -118,6 +117,18 @@ function loginStrategyForAgent(agent) {
 /** True when Chat can run the flow itself instead of sending the user away. */
 function canLoginFromChat(agent) {
   return loginStrategyForAgent(agent).mode === LOGIN_MODES.CLI;
+}
+
+/** A callback on the host's localhost cannot be reached by a remote browser. */
+function loginStrategyForRemoteAgent(agent) {
+  const strategy = loginStrategyForAgent(agent);
+  if (agent === 'codex') return { ...strategy, command: ['codex', 'login', '--device-auth'] };
+  if (strategy.mode !== LOGIN_MODES.CLI) return {
+    ...strategy,
+    terminalHint: null,
+    reason: `${strategy.reason || ''} Complete sign-in on the remote computer.`,
+  };
+  return strategy;
 }
 
 /** True when Chat can clear the current credentials before starting login. */
@@ -152,6 +163,7 @@ module.exports = {
   LOGIN_MODES,
   PROVIDER_LOGIN,
   loginStrategyForAgent,
+  loginStrategyForRemoteAgent,
   canLoginFromChat,
   canSwitchAccount,
   loginCommandLine,

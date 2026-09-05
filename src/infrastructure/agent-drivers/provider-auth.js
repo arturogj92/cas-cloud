@@ -1,4 +1,5 @@
-const { canLoginFromChat } = require('./provider-login');
+const { canLoginFromChat, canSwitchAccount } = require('./provider-login');
+const { isModelUsageLimitError } = require('../../shared/provider-error-presentation');
 
 const PROVIDER_AUTH = Object.freeze({
   claude: {
@@ -33,6 +34,7 @@ const PROVIDER_AUTH = Object.freeze({
 
 const AUTH_ERROR_PATTERNS = Object.freeze([
   /\bnot logged in\b/i,
+  /\bnot signed in\b/i,
   /\bnot authenticated\b/i,
   /\bunauthenticated\b/i,
   /\bauthentication required\b/i,
@@ -152,6 +154,18 @@ function classifyProviderStartupError(agent, error) {
   return createProviderUnavailableStatus(agent);
 }
 
+/** Account recovery for an error row; quota limits must not lock model selection. */
+function providerErrorLoginAction(agent, message) {
+  const auth = classifyProviderAuthError(agent, message);
+  const usageLimit = isModelUsageLimitError({ provider: agent, payload: { message } });
+  if (!auth && !usageLimit) return null;
+  const replaceAccount = auth?.switchAccount === true || (usageLimit && canSwitchAccount(agent));
+  return {
+    action: replaceAccount ? 'switch-account' : 'start',
+    label: replaceAccount ? 'Change account' : canLoginFromChat(agent) ? 'Sign in' : 'Sign-in options'
+  };
+}
+
 function serializeProviderError(agent, error) {
   const message = String(error && error.message ? error.message : error || 'Provider error');
   const providerStatus = classifyProviderStartupError(agent, error);
@@ -178,5 +192,6 @@ module.exports = {
   createProviderUnavailableStatus,
   createUnauthenticatedStatus,
   providerAuthMetadata,
+  providerErrorLoginAction,
   serializeProviderError
 };

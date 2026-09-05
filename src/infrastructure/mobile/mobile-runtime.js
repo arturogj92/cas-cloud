@@ -31,6 +31,7 @@ const {
 
 const PROTOCOL_VERSION = 2;
 const SESSION_SUBSCRIPTIONS_FEATURE = 'session-subscriptions';
+const SNAPSHOT_PROJECT_ICONS_FEATURE = 'snapshot-project-icons';
 const SUBSCRIPTION_ONLY_EVENT_TYPES = new Set([
   'session.config.updated',
   'session.commands.updated',
@@ -658,7 +659,7 @@ class MobileRuntime {
     return compact;
   }
 
-  snapshot() {
+  snapshot({ projectIcons = false } = {}) {
     const allProjects = this._projects();
     const projects = allProjects.slice(0, 100);
     const snapshot = {
@@ -679,6 +680,19 @@ class MobileRuntime {
       terminalStatuses: compactTerminalStatuses(this.getTerminalStatuses()),
       sessions: Array.from(this.sessions.values(), (session) => this._snapshotSession(session))
     };
+    const referencedProjectIcons = new Set();
+    if (projectIcons) {
+      for (const session of snapshot.sessions) {
+        if (!session.project?.iconDataUrl) continue;
+        const projectIconIndex = projects.findIndex((project) => (
+          project.path === session.project.path && project.iconDataUrl === session.project.iconDataUrl
+        ));
+        if (projectIconIndex < 0) continue;
+        const { iconDataUrl, ...project } = session.project;
+        session.project = { ...project, projectIconIndex };
+        referencedProjectIcons.add(projectIconIndex);
+      }
+    }
     if (jsonBytes(snapshot) <= MAX_SNAPSHOT_BYTES) return snapshot;
 
     const compact = {
@@ -701,6 +715,7 @@ class MobileRuntime {
     };
     let iconChars = compact.projects.reduce((total, project) => total + (project.iconDataUrl?.length || 0), 0);
     for (let index = compact.projects.length - 1; iconChars > MAX_SNAPSHOT_PROJECT_ICON_CHARS && index >= 0; index -= 1) {
+      if (referencedProjectIcons.has(index)) continue;
       const icon = compact.projects[index].iconDataUrl;
       if (!icon) continue;
       delete compact.projects[index].iconDataUrl;
@@ -708,6 +723,7 @@ class MobileRuntime {
     }
     let used = jsonBytes(compact);
     for (let index = compact.projects.length - 1; used > MAX_SNAPSHOT_BYTES && index >= 0; index -= 1) {
+      if (referencedProjectIcons.has(index)) continue;
       if (!compact.projects[index].iconDataUrl) continue;
       delete compact.projects[index].iconDataUrl;
       used = jsonBytes(compact);
@@ -1002,6 +1018,7 @@ class MobileRuntime {
 
   _registerSession(started) {
     if (!started || typeof started.sessionId !== 'string') return;
+    const restarting = this.sessions.get(started.sessionId)?.restarting === true;
     const clientRequestId = cleanText(started.clientRequestId, 128);
     this._session(started.sessionId, {
       clientRequestId,
@@ -1054,7 +1071,7 @@ class MobileRuntime {
         hasEarlierHistory: started.resumed === true
       }
     });
-    for (const event of started.historyEvents || []) {
+    for (const event of restarting ? [] : started.historyEvents || []) {
       this._publishProviderEvent(started.sessionId, event);
     }
     this._sessionsChanged();
@@ -1140,6 +1157,10 @@ class MobileRuntime {
     // owner. Creating sessions from them leaves anonymous error cards behind.
     if (!this.sessions.has(sessionId)) return;
     if (!event || !isProviderEventType(event.type)) return;
+    // A credential restart retains the live transcript. Native resume may replay
+    // it with different IDs or deltas, so it must not be appended a second time.
+    if (this.sessions.get(sessionId).restarting
+      && ['item.started', 'item.updated', 'item.completed', 'content.delta', 'turn.started', 'turn.completed'].includes(event.type)) return;
     if (
       event.visibility === 'internal'
       && !['request.opened', 'request.updated', 'request.closed', 'question.opened',
@@ -1555,6 +1576,8 @@ class MobileRuntime {
     }
     client.selective = Array.isArray(message.features)
       && message.features.slice(0, 20).includes(SESSION_SUBSCRIPTIONS_FEATURE);
+    const projectIcons = Array.isArray(message.features)
+      && message.features.slice(0, 20).includes(SNAPSHOT_PROJECT_ICONS_FEATURE);
     client.subscriptions = new Set(client.selective && Array.isArray(message.subscriptions)
       ? message.subscriptions.slice(0, 20).filter((sessionId) => (
           typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 128
@@ -1577,12 +1600,15 @@ class MobileRuntime {
       runtimeId: this.runtimeId,
       latestSeq: this.sequence,
       reset: !replayable,
-      features: client.selective ? [SESSION_SUBSCRIPTIONS_FEATURE] : [],
+      features: [
+        ...(client.selective ? [SESSION_SUBSCRIPTIONS_FEATURE] : []),
+        ...(projectIcons ? [SNAPSHOT_PROJECT_ICONS_FEATURE] : []),
+      ],
       desktop: this.getClientMetadata(),
       capabilities: (this.getCapabilities() || []).slice(0, 50).flatMap((capability) => (
         typeof capability === 'string' && capability.length <= 100 ? [capability] : []
       )),
-      ...(!replayable ? { snapshot: this.snapshot() } : {})
+      ...(!replayable ? { snapshot: this.snapshot({ projectIcons }) } : {})
     };
     this.streamMetrics[replayable ? 'replayWelcomes' : 'resetWelcomes'] += 1;
     // How long the desktop itself took to answer, so the mobile reconnect timeline can
@@ -1919,7 +1945,9 @@ class MobileRuntime {
       if (typeof this.describeProviderLogin !== 'function') throw new Error('Remote provider sign-in is unavailable');
       exactPayload(['agent']);
       if (!MOBILE_AGENTS.has(payload.agent)) throw new Error('Choose a supported provider');
-      return this.describeProviderLogin(payload.agent);
+      const session = sessionId ? this.sessions.get(sessionId) : null;
+      if (sessionId && (!session || session.agent !== payload.agent)) throw new Error('Remote sign-in session is invalid');
+      return this.describeProviderLogin(payload.agent, { accountId: session?.accountId || 'current' });
     }
     if (command.type === 'provider.login.start') {
       if (typeof this.startProviderLogin !== 'function') throw new Error('Remote provider sign-in is unavailable');
@@ -1927,7 +1955,10 @@ class MobileRuntime {
       if (!MOBILE_AGENTS.has(payload.agent) || (payload.replaceAccount !== undefined && typeof payload.replaceAccount !== 'boolean')) {
         throw new Error('Remote provider sign-in is invalid');
       }
-      return this.startProviderLogin({ agent: payload.agent, replaceAccount: payload.replaceAccount === true });
+      const session = sessionId ? this.sessions.get(sessionId) : null;
+      if (sessionId && (!session || session.agent !== payload.agent)) throw new Error('Remote sign-in session is invalid');
+      if (session?.currentTurn?.state === 'running') throw new Error('Wait for the current response to finish');
+      return this.startProviderLogin({ agent: payload.agent, accountId: session?.accountId || 'current', replaceAccount: payload.replaceAccount === true });
     }
     if (command.type === 'provider.login.submit') {
       if (typeof this.submitProviderLogin !== 'function') throw new Error('Remote provider sign-in is unavailable');
@@ -2181,6 +2212,41 @@ class MobileRuntime {
           attachmentId: retained.attachmentId,
           ...(retained.thumbnailDataUrl ? { thumbnailDataUrl: retained.thumbnailDataUrl } : {})
         };
+      }
+      case 'session.restart': {
+        exactPayload([]);
+        const session = this.sessions.get(sessionId);
+        if (!session || !session.cwd) throw new Error('The remote conversation is unavailable');
+        if (session.currentTurn?.state === 'running' || session.state === 'starting') {
+          throw new Error('Wait for the current response to finish');
+        }
+        if (session.threadId && session.supportsResume === false) {
+          throw new Error('This provider cannot resume this conversation after sign-in');
+        }
+        session.state = 'starting';
+        session.restarting = true;
+        try {
+          await this.manager.restartSession(sessionId, {
+            agent: session.agent,
+            accountId: session.accountId || 'current',
+            cwd: session.cwd,
+            resumeSessionId: session.threadId || undefined,
+            model: session.model,
+            effort: session.effort,
+            permissionMode: session.permissionMode,
+            interactionMode: session.interactionMode,
+            terminalId: session.desktopTerminalId,
+            terminalUuid: session.terminalUuid,
+            clientRequestId: session.clientRequestId,
+            providerOptions: session.serviceTier ? [{ id: 'serviceTier', value: session.serviceTier }] : [],
+          });
+          return { restarted: true };
+        } catch (error) {
+          session.state = 'error';
+          throw error;
+        } finally {
+          delete session.restarting;
+        }
       }
       case 'session.models':
         return {

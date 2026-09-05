@@ -286,6 +286,9 @@ class CodexAppServerDriver extends EventEmitter {
 
     this._child = null;
     this._pendingRequests = new Map();
+    this._taskMcpStartup = null;
+    this._taskMcpWaiters = new Set();
+    this._inputInterruptVersion = 0;
     this._pendingApprovals = new Map();
     this._pendingQuestions = new Map();
     this._nextRequestId = 1;
@@ -447,6 +450,10 @@ class CodexAppServerDriver extends EventEmitter {
       });
       return { turnId: activeTurnId, steered: true };
     }
+    const interruptVersion = this._inputInterruptVersion;
+    await this._waitForTaskMcp();
+    if (interruptVersion !== this._inputInterruptVersion) throw new Error('CodeAgentSwarm message cancelled while tools were starting.');
+    if (this._stopping || this._exited) throw new Error('Codex session stopped');
     const result = await this._request('turn/start', {
       threadId: this._threadId,
       input,
@@ -454,6 +461,37 @@ class CodexAppServerDriver extends EventEmitter {
     });
     this._activeTurnId = result?.turn?.id;
     return { turnId: this._activeTurnId };
+  }
+
+  async _waitForTaskMcp() {
+    // Startup notifications can arrive after thread/start returns. Resolve the
+    // enabled server from config only when needed; never wait for MCP inventory.
+    if (!this._taskMcpStartup) {
+      const { config } = await this._request('config/read', { cwd: this._sessionCwd, includeLayers: false });
+      const server = config?.mcp_servers?.['codeagentswarm-tasks'];
+      this._taskMcpStartup ||= {
+        threadId: this._threadId,
+        status: server && server.enabled !== false ? 'starting' : 'ready'
+      };
+    }
+    if (this._taskMcpStartup.threadId !== this._threadId) return;
+    if (this._taskMcpStartup.status === 'starting') {
+      await new Promise((resolve, reject) => {
+        const finish = (error) => {
+          clearTimeout(timer);
+          this._taskMcpWaiters.delete(finish);
+          if (error) reject(error);
+          else resolve();
+        };
+        const timer = setTimeout(() => finish(new Error(
+          'CodeAgentSwarm tools are still starting. Retry sending your message.'
+        )), this._requestTimeoutMs);
+        this._taskMcpWaiters.add(finish);
+      });
+    }
+    if (this._taskMcpStartup.status !== 'ready') {
+      throw new Error('CodeAgentSwarm tools could not start. Reopen this conversation to retry.');
+    }
   }
 
   async _flushQueuedTurnInputs() {
@@ -481,6 +519,8 @@ class CodexAppServerDriver extends EventEmitter {
    * @returns {Promise<void>}
    */
   async interruptTurn() {
+    this._inputInterruptVersion += 1;
+    for (const finish of this._taskMcpWaiters) finish(new Error('CodeAgentSwarm message cancelled while tools were starting.'));
     if (!this._activeTurnId) return undefined;
     await this._request('turn/interrupt', {
       threadId: this._threadId,
@@ -1283,6 +1323,7 @@ class CodexAppServerDriver extends EventEmitter {
    * @param {Error} error
    */
   _rejectAllPending(error) {
+    for (const finish of this._taskMcpWaiters) finish(error);
     for (const pending of this._pendingRequests.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -1374,6 +1415,16 @@ class CodexAppServerDriver extends EventEmitter {
    */
   _handleNotification({ method, params }) {
     const notifThreadId = params && (params.threadId || (params.thread && params.thread.id));
+    if (method === 'mcpServer/startupStatus/updated') {
+      if (params?.name === 'codeagentswarm-tasks' && notifThreadId
+          && (!this._threadId || notifThreadId === this._threadId)) {
+        this._taskMcpStartup = params;
+        if (params.status !== 'starting') {
+          for (const finish of this._taskMcpWaiters) finish();
+        }
+      }
+      return;
+    }
     if (notifThreadId && this._threadId && notifThreadId !== this._threadId) {
       this._handleChildNotification(notifThreadId, method, params);
       return;

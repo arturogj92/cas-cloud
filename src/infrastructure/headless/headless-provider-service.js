@@ -6,8 +6,7 @@ const path = require('path');
 const { ProviderLoginManager } = require('../agent-drivers/provider-login-manager');
 const {
   canSwitchAccount,
-  loginStrategyForAgent,
-  terminalLoginHint,
+  loginStrategyForRemoteAgent: headlessLoginStrategy,
 } = require('../agent-drivers/provider-login');
 const { initializeCliAgentRegistry } = require('../services/cli-agents/cli-agent-registry-bootstrap');
 
@@ -52,18 +51,11 @@ function publicLogin(agent, strategy, status = { known: false }) {
     acceptsCode: strategy.acceptsCode === true,
     codeHint: String(strategy.codeHint || '').slice(0, 200),
     command: Array.isArray(strategy.command) ? strategy.command.join(' ').slice(0, 300) : null,
-    terminalHint: terminalLoginHint(agent) || null,
+    terminalHint: strategy.terminalHint || null,
     reason: String(strategy.reason || '').slice(0, 500),
     canSwitchAccount: false,
     status,
   };
-}
-
-function headlessLoginStrategy(agent) {
-  const strategy = loginStrategyForAgent(agent);
-  return agent === 'codex'
-    ? { ...strategy, command: ['codex', 'login', '--device-auth'] }
-    : strategy;
 }
 
 class HeadlessProviderService extends EventEmitter {

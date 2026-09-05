@@ -67,6 +67,7 @@ const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'providers.list',
   'provider.install',
   'provider.login.describe',
+  'session.restart',
   'provider.login.start',
   'provider.login.submit',
   'provider.login.cancel',
