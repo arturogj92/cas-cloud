@@ -24,7 +24,7 @@ const DEFAULT_TERMINAL_STATUSES = [
     { status_key: 'needs_testing', label: 'Needs testing', color: '#3b82f6', icon: 'flask-conical', sort_order: 2, is_default: 1, agent_settable: 1, prompt: 'Set it when you finish the implementation and the work is pending the user testing it manually. Do not set it if there are still things left to implement.' },
     { status_key: 'working', label: 'Working', color: '#fbbf24', icon: 'hammer', sort_order: 3, is_default: 1, agent_settable: 1, prompt: 'Set it when you start working on any request and while you are implementing, investigating or fixing something.' },
     { status_key: 'done', label: 'Done', color: '#22c55e', icon: 'circle-check', sort_order: 4, is_default: 1, agent_settable: 1, prompt: 'Set it when the work is completely finished: implemented, validated and with its commit/push done when applicable. It is the final state.' },
-    { status_key: 'idle', label: 'Idle', color: '#6b7280', icon: 'circle-dashed', sort_order: 5, is_default: 1, agent_settable: 0, prompt: 'Set by the app when an agent is resting without an explicit work status, including after a reply finishes. It does not mean the work is complete or that user input is required. Agents cannot set this status.' }
+    { status_key: 'idle', label: 'Idle', color: '#6b7280', icon: 'circle-dashed', sort_order: 5, is_default: 1, agent_settable: 0, prompt: 'Set by the app on an agent that has just been opened and has not been given any work yet. Agents cannot set this status; it clears itself as soon as you send the agent something.' }
 ];
 
 // The status the app seeds on a freshly opened terminal that the user has not
@@ -50,14 +50,14 @@ const LEGACY_DEFAULT_SORT_ORDER = {
     done: 6
 };
 
-// Older factory prompts describe Idle as birth-only or use Spanish. Since the
+// Older factory prompts reuse Idle after replies or use Spanish. Since the
 // prompts are now user-editable (Settings > Terminal Statuses), the factory copy
 // is English. These are the exact legacy strings: a default status still carrying
 // one VERBATIM was never touched by the user, so it is safe to upgrade it to the
 // English wording. Anything the user edited (or any custom status) is left alone.
 // KEEP IN SYNC with database-mcp-standalone.js.
 const LEGACY_DEFAULT_PROMPTS = {
-    idle: 'Set by the app on an agent that has just been opened and has not been given any work yet. Agents cannot set this status; it clears itself as soon as you send the agent something.',
+    idle: 'Set by the app when an agent is resting without an explicit work status, including after a reply finishes. It does not mean the work is complete or that user input is required. Agents cannot set this status.',
     working: 'Ponlo al empezar a trabajar en cualquier petición y mientras estés implementando, investigando o arreglando algo.',
     needs_input: 'Ponlo cuando pares porque necesites una respuesta o decisión del usuario para continuar (una pregunta, una elección de diseño, un permiso).',
     needs_testing: 'Ponlo cuando termines la implementación y el trabajo quede pendiente de que el usuario lo pruebe a mano. No lo pongas si aún quedan cosas por implementar.',

@@ -371,9 +371,12 @@ class MobileRuntime {
     workspaceGitCreate = null,
     listProjects = null,
     listProjectDirectories = null,
+    listProjectLocations = null,
+    addProjectLocation = null,
     createProject = null,
     updateProject = null,
     gitAvailability = null,
+    listGitHubRepositories = null,
     projectIconAvailability = null,
     generateProjectIcon = null,
     registerProject = null,
@@ -441,9 +444,12 @@ class MobileRuntime {
     this.workspaceGitCreate = workspaceGitCreate;
     this.listProjects = listProjects;
     this.listProjectDirectories = listProjectDirectories;
+    this.listProjectLocations = listProjectLocations;
+    this.addProjectLocation = addProjectLocation;
     this.createProject = createProject;
     this.updateProject = updateProject;
     this.gitAvailability = gitAvailability;
+    this.listGitHubRepositories = listGitHubRepositories;
     this.projectIconAvailability = projectIconAvailability;
     this.generateProjectIcon = generateProjectIcon;
     this.registerProject = registerProject;
@@ -1634,7 +1640,7 @@ class MobileRuntime {
     // Attachment chunks and private requested reads already have their own bounds.
     // Their payloads must not also enter command history or replay.
     const directResult = ['attachment.read', 'history.older', 'session.subscribe', 'session.unsubscribe', 'coordination.sessions', 'coordination.transcript', 'coordination.message', 'coordination.peers.replace',
-      'tasks.list', 'projects.list', 'project.directories.list',
+      'tasks.list', 'projects.list', 'project.directories.list', 'project.locations.list',
       'providers.list', 'provider.login.describe',
       'workspace.files.list', 'workspace.files.read', 'workspace.files.search',
       'workspace.git.status', 'workspace.git.diff', 'workspace.git.log', 'workspace.git.branches'].includes(message.command?.type);
@@ -1795,6 +1801,22 @@ class MobileRuntime {
         relativePath: payload.relativePath,
       });
     }
+    if (['project.locations.list', 'project.locations.add'].includes(command.type)) {
+      const adding = command.type === 'project.locations.add';
+      exactPayload(adding ? ['locationId', 'requestId'] : ['locationId', 'offset']);
+      try {
+        const result = adding
+          ? await this.addProjectLocation({ locationId: payload.locationId, requestId: mutationRequestId() })
+          : await this.listProjectLocations(payload);
+        if (adding) this.publishProjects();
+        return result;
+      } catch (error) {
+        // Filesystem/SQLite exceptions must not disclose paths to the controller.
+        throw Object.assign(new Error('The remote location could not be read or saved.'), {
+          code: ['location_expired', 'location_permission_denied'].includes(error.code) ? error.code : 'location_unavailable',
+        });
+      }
+    }
     if (command.type === 'project.create') {
       if (typeof this.createProject !== 'function') throw new Error('Remote project creation is unavailable');
       exactPayload(['name', 'projectPath', 'color', 'icon', 'requestId']);
@@ -1813,6 +1835,11 @@ class MobileRuntime {
       if (typeof this.gitAvailability !== 'function') return { available: false };
       exactPayload(['rootId']);
       return this.gitAvailability({ rootId: cleanText(payload.rootId, 128) });
+    }
+    if (command.type === 'project.github.repositories') {
+      exactPayload(['rootId']);
+      if (typeof this.listGitHubRepositories !== 'function') throw new Error('Remote GitHub import is unavailable');
+      return this.listGitHubRepositories();
     }
     if (command.type === 'project.icon.availability') {
       if (typeof this.projectIconAvailability !== 'function') return { available: false };
@@ -1837,11 +1864,12 @@ class MobileRuntime {
     }
     if (command.type === 'project.clone') {
       if (typeof this.cloneProject !== 'function') throw new Error('Remote project cloning is unavailable');
-      exactPayload(['rootId', 'url', 'relativePath', 'displayName', 'color', 'icon', 'requestId']);
+      exactPayload(['rootId', 'url', 'relativePath', 'displayName', 'color', 'icon', 'requestId', 'githubRepository']);
       if (typeof payload.requestId !== 'string' || !payload.requestId) throw new Error('A clone requestId is required');
       return this.cloneProject({
         rootId: payload.rootId,
         url: payload.url,
+        ...(payload.githubRepository !== undefined ? { githubRepository: payload.githubRepository } : {}),
         relativePath: payload.relativePath,
         displayName: payload.displayName,
         color: payload.color,

@@ -16,6 +16,7 @@ const { PeerRuntimeNetwork } = require('../mobile/peer-runtime-network');
 const { HeadlessSessionBridge } = require('./headless-session-bridge');
 const { createHeadlessChatPreferences } = require('./headless-chat-preferences');
 const { HeadlessProjectRegistry } = require('./headless-project-registry');
+const { GitHubProjectImportService } = require('../services/github-project-import-service');
 const { AGENT_IDS, HeadlessProviderService } = require('./headless-provider-service');
 const { HeadlessTaskService } = require('./headless-task-service');
 const {
@@ -51,11 +52,14 @@ const TERMINAL_STATUSES = [
 const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'projects.list',
   'project.directories.list',
+  'project.locations.list',
+  'project.locations.add',
   'project.update',
   'project.register',
   'project.clone',
   'project.clone.cancel',
   'project.git.availability',
+  'project.github.repositories',
   'project.unregister',
   'shortcuts.manage',
   'session.action',
@@ -872,9 +876,12 @@ function createHeadlessHost({
     workspaceGitCreate: inProject(workspace.gitCreate),
     listProjects: (payload) => registry.list(payload),
     listProjectDirectories: (payload) => registry.listDirectories(payload),
+    listProjectLocations: (payload) => registry.listLocations(payload),
+    addProjectLocation: (payload) => registry.addLocation(payload),
     updateProject: (payload) => registry.update(payload),
     registerProject: (payload) => registry.register(payload),
-    cloneProject: (payload) => registry.clone(payload),
+    cloneProject: async (payload) => registry.clone(await new GitHubProjectImportService().prepareRemoteClone(payload)),
+    listGitHubRepositories: () => new GitHubProjectImportService().remoteRepositories(),
     cancelProjectClone: (payload) => registry.cancelClone(payload),
     gitAvailability: () => registry.gitAvailability(),
     unregisterProject: (payload) => {

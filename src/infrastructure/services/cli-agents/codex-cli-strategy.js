@@ -243,10 +243,11 @@ class CodexCliStrategy extends CliAgentStrategy {
         return getCodexQuotaReader().getInstance().getQuota();
     }
 
-    setQuotaAccountResolver(resolver, isEnabled = null, activeBindings = null) {
+    setQuotaAccountResolver(resolver, isEnabled = null, activeBindings = null, bindingSince = null) {
         this._quotaAccountResolver = typeof resolver === 'function' ? resolver : null;
         this._quotaAccountResolverEnabled = typeof isEnabled === 'function' ? isEnabled : null;
         this._quotaAccountBindings = typeof activeBindings === 'function' ? activeBindings : null;
+        this._quotaAccountBindingSince = typeof bindingSince === 'function' ? bindingSince : null;
     }
 
     async getQuotas() {
@@ -254,7 +255,8 @@ class CodexCliStrategy extends CliAgentStrategy {
             ? null
             : this._quotaAccountResolver;
         const bindings = resolver ? this._quotaAccountBindings?.() : null;
-        return getCodexQuotaReader().getInstance().getQuotas(resolver, bindings);
+        const bindingSince = (resolver ? this._quotaAccountBindingSince?.() : null) ?? null;
+        return getCodexQuotaReader().getInstance().getQuotas(resolver, bindings, bindingSince);
     }
 
     // ========================================

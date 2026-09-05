@@ -329,7 +329,8 @@ function interpretStatus(agent, { code, output }) {
       detail: output.split('\n')[0] || ''
     };
   }
-  return { loggedIn: code === 0, detail: output.split('\n')[0] || '' };
+  const signedOut = agent === 'cursor' && /\bnot\s+(?:logged|signed)\s+in\b/i.test(output);
+  return { loggedIn: code === 0 && !signedOut, detail: output.split('\n')[0] || '' };
 }
 
 function safeRequireRegistry() {

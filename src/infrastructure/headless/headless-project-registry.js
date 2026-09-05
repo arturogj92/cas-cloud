@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { RemoteProjectLocations } = require('../services/remote-project-locations');
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_CLONES = 2;
@@ -112,6 +113,7 @@ class HeadlessProjectRegistry {
     this.database = database;
     this.db = database.db;
     this.runtimeId = runtimeId;
+    this.locations = new RemoteProjectLocations();
     this.spawnImpl = spawnImpl;
     this.onProjectsChanged = onProjectsChanged;
     this.onOperation = onOperation;
@@ -360,6 +362,22 @@ class HeadlessProjectRegistry {
       .map((root) => ({ rootId: root.root_id, name: String(root.name).slice(0, 200) }));
   }
 
+  listLocations(payload) {
+    return this.locations.list(payload, this.db.prepare('SELECT path FROM runtime_project_roots').all().map((root) => root.path));
+  }
+
+  addLocation({ locationId }) {
+    const resolved = this.locations.writable(locationId);
+    const existing = this.db.prepare('SELECT root_id FROM runtime_project_roots WHERE path = ?').get(resolved);
+    if (existing) return { rootId: existing.root_id, name: path.basename(resolved) };
+    if (this.getRoots().length >= 100) throw new Error('At most 100 project locations can be saved');
+    const rootId = randomId();
+    const name = path.basename(resolved);
+    this.db.prepare('INSERT INTO runtime_project_roots (root_id, path, name) VALUES (?, ?, ?)').run(rootId, resolved, name);
+    this._bumpRevision();
+    return { rootId, name };
+  }
+
   gitAvailability() {
     return new Promise((resolve) => {
       let child;
@@ -564,7 +582,7 @@ class HeadlessProjectRegistry {
     return this._recordRequest(requestId, hash, { projectId: project.projectId, revision, updated: true });
   }
 
-  clone({ rootId, url, relativePath, displayName, color, icon, requestId }) {
+  clone({ rootId, url, relativePath, displayName, color, icon, requestId, gitConfig = [] }) {
     const normalizedUrl = validateGitUrl(url);
     const root = this._root(rootId);
     this._assertSecureCloneRoot(root);
@@ -579,7 +597,7 @@ class HeadlessProjectRegistry {
         && (typeof appearance.icon !== 'string' || !ICON_PATTERN.test(appearance.icon)))) {
       throw runtimeError('invalid_project_update', 'Project changes are invalid');
     }
-    const hash = requestHash('clone', { rootId, url: normalizedUrl, relativePath: normalizedRelative, ...appearance });
+    const hash = requestHash('clone', { rootId, url: normalizedUrl, relativePath: normalizedRelative, ...appearance, ...(gitConfig.length ? { gitConfig } : {}) });
     const duplicate = this._request(requestId, hash);
     if (duplicate) return duplicate;
     const destinationInfo = this._cloneDestination(root, normalizedRelative, normalizedUrl);
@@ -596,6 +614,7 @@ class HeadlessProjectRegistry {
       requestId,
       rootId,
       url: normalizedUrl,
+      gitConfig,
       appearance,
       destination: destinationInfo.destination,
       temporaryDestination: null,
@@ -698,7 +717,7 @@ class HeadlessProjectRegistry {
     this._emitOperation(operation.operationId, operation.requestId, 'running');
     let child;
     try {
-      child = this.spawnImpl('git', ['-c', 'protocol.file.allow=never', 'clone', '--', operation.url, operation.temporaryDestination], {
+      child = this.spawnImpl('git', ['-c', 'protocol.file.allow=never', ...operation.gitConfig, 'clone', '--', operation.url, operation.temporaryDestination], {
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https:ssh' },

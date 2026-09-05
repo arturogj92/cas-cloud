@@ -302,7 +302,7 @@ class CodexQuotaReader {
      *   accountWide: { snapshot: object, accountWide: boolean }|null
      * }|null>}
      */
-    async readCandidatesFromFile(filePath, knownSessionId = null) {
+    async readCandidatesFromFile(filePath, knownSessionId = null, { since = null } = {}) {
         try {
             if (!filePath || !fs.existsSync(filePath)) return null;
             let sessionId = knownSessionId;
@@ -330,6 +330,11 @@ class CodexQuotaReader {
                     const parsed = JSON.parse(line.toString('utf8'));
                     const rateLimits = extractRateLimits(parsed);
                     if (!rateLimits) return false;
+                    if (since && parsed.timestamp && Date.parse(parsed.timestamp) < since) {
+                        // Scanning backwards: everything further up predates the
+                        // binding too, so stop with whatever newer records were found.
+                        return true;
+                    }
 
                     const windows = [];
                     const primary = bucketToWindow(rateLimits.primary);
@@ -481,7 +486,7 @@ class CodexQuotaReader {
         }
     }
 
-    async getQuotas(accountForSession, activeBindings = null) {
+    async getQuotas(accountForSession, activeBindings = null, bindingSince = null) {
         if (typeof accountForSession !== 'function') {
             const snapshot = await this.getQuota();
             return snapshot ? [snapshot] : [];
@@ -515,7 +520,14 @@ class CodexQuotaReader {
                 for (const [accountId, files] of boundFilesByAccount) {
                     let fallback = null;
                     for (const { file, sessionId } of files) {
-                        const candidates = await this.readCandidatesFromFile(file, sessionId);
+                        // Records older than the binding belong to whoever drove the
+                        // conversation before the account switch.
+                        const since = bindingSince && typeof bindingSince === 'object'
+                            ? bindingSince[sessionId]
+                            : null;
+                        const candidates = await this.readCandidatesFromFile(file, sessionId, {
+                            since: Number.isFinite(since) ? since : null
+                        });
                         if (!candidates) continue;
                         if (candidates.accountWide && hasActiveWindow(candidates.accountWide.snapshot)) {
                             boundSnapshots.push({ ...candidates.accountWide.snapshot, accountId });
