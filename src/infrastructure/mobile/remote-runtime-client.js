@@ -1098,6 +1098,7 @@ class RemoteRuntimeClient {
       this._diagnostic('remote.runtime_rejected', { reason: 'invalid_envelope', kind, bytes, snapshotBytes });
       return this._protocolFailure(this.socket);
     }
+    if (safe.kind === 'protocol.error') return this._protocolFailure(this.socket);
     if (safe.kind === 'command.accepted') {
       this._acceptCommand(safe);
       return;
@@ -1234,9 +1235,11 @@ class RemoteRuntimeClient {
     this.runtimeWaitTimer = setTimeout(() => {
       this.runtimeWaitTimer = null;
       if (!['connecting', 'syncing'].includes(this.state.phase)) return;
-      // Keep the authenticated socket: a late welcome can still recover without a retry loop.
+      // Relay liveness does not prove host sync; retry through the existing bounded backoff.
       this._diagnostic('remote.runtime_wait_timeout');
+      this._closeSocket();
       this._setState({ ...this.state, phase: 'offline', error: 'The remote computer did not respond' });
+      this._scheduleReconnect();
     }, this.timeouts.open);
   }
 

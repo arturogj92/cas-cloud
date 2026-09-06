@@ -1563,7 +1563,11 @@ class MobileRuntime {
       this._sendProtocolError(client, 'invalid_json', 'Message must be valid JSON');
       return;
     }
-    if (!client.ready) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      this._sendProtocolError(client, 'invalid_message', 'Message must be a JSON object');
+      return;
+    }
+    if (!client.ready || message.kind === 'hello') {
       this._handleHello(client, message);
       return;
     }
