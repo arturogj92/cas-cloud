@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
+const { validateSessionSpawnRequest } = require('../services/session-spawn-request');
 const { boundedConversationMessages } = require('../agent-drivers/chat-history-pagination');
 const { askRemoteProject, listRemoteProjects, parseRemoteResourceId } = require('../mobile/remote-runtime-client');
 
@@ -136,6 +137,7 @@ class HeadlessSessionBridge {
     this.server = null;
     this.port = null;
     this.activeRemoteSessionStarts = new Set();
+    this.activeSessionStarts = new Set();
     this.pendingReplies = new Map();
     this.unsubscribeEnvelopes = null;
     this.unsubscribePeerEnvelopes = null;
@@ -576,6 +578,30 @@ class HeadlessSessionBridge {
       } catch (_) {
         this.pendingReplies.delete(communicationRequestId);
         return sendJson(response, 503, { error: 'The paired Mac is offline' });
+      }
+    }
+
+    if (request.method === 'POST' && url.pathname === '/session-communication/spawn') {
+      let options;
+      try { options = validateSessionSpawnRequest(await readJson(request)); }
+      catch (error) { return sendJson(response, 400, { error: error.message }); }
+      if (typeof this.runtime.createSession !== 'function') {
+        return sendJson(response, 503, { error: 'Session creation is unavailable' });
+      }
+      if (this.activeSessionStarts.has(sourceSessionId)) {
+        return sendJson(response, 409, { error: 'This session already has a start in progress' });
+      }
+      this.activeSessionStarts.add(sourceSessionId);
+      try {
+        const source = this._sourceSession(sourceSessionId);
+        const result = await this.runtime.createSession({ ...options, cwd: source.cwd, useWorktree: false });
+        const session = this.runtime.sessions.get(result.sessionId);
+        if (!session?.terminalUuid) throw new Error('The new session is unavailable');
+        return sendJson(response, 200, { success: true, session_id: session.terminalUuid, agent: options.agent });
+      } catch (_) {
+        return sendJson(response, 503, { error: 'The session could not be started; do not retry automatically' });
+      } finally {
+        this.activeSessionStarts.delete(sourceSessionId);
       }
     }
 

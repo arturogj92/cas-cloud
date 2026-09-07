@@ -1,0 +1,10 @@
+{$CAS_WEB_DOMAIN} {
+  root * /srv
+  encode zstd gzip
+  try_files {path} /index.html
+  file_server
+}
+
+{$CAS_API_DOMAIN} {
+  reverse_proxy control-plane:8788
+}

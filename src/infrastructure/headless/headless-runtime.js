@@ -187,7 +187,9 @@ async function createAccessTokenProvider({
   fetchImpl = globalThis.fetch,
   appDataPath,
 } = {}) {
-  const desktopAuth = env.CAS_ACCESS_TOKEN ? null : loadDesktopAuth(appDataPath);
+  // Credentials saved by Desktop belong to the hosted service, never a custom backend.
+  const desktopAuth = env.CAS_ACCESS_TOKEN || new URL(backendUrl).origin !== DEFAULT_BACKEND_URL
+    ? null : loadDesktopAuth(appDataPath);
   let token = env.CAS_ACCESS_TOKEN || desktopAuth?.token;
   const refreshToken = env.CAS_REFRESH_TOKEN || desktopAuth?.refreshToken;
   let refreshPromise = null;

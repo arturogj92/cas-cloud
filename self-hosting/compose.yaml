@@ -1,0 +1,34 @@
+services:
+  control-plane:
+    build:
+      context: ../control-plane
+      dockerfile: ../self-hosting/Dockerfile.control-plane
+    env_file: ../control-plane/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8788
+      CAS_CLOUD_DATABASE: /app/data/devices.sqlite
+    volumes:
+      - devices:/app/data
+    restart: unless-stopped
+  web:
+    build:
+      context: ../web
+      dockerfile: ../self-hosting/Dockerfile.web
+      args:
+        EXPO_PUBLIC_MOBILE_RELAY_URL: ${MOBILE_RELAY_URL:?Set MOBILE_RELAY_URL}
+    environment:
+      CAS_WEB_DOMAIN: ${CAS_WEB_DOMAIN:?Set CAS_WEB_DOMAIN}
+      CAS_API_DOMAIN: ${CAS_API_DOMAIN:?Set CAS_API_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+volumes:
+  devices:
+  caddy_data:
+  caddy_config:

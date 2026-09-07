@@ -38,7 +38,7 @@ Before using **Write** or **Edit** tools on ANY file, you MUST ask yourself:
 │                                                          │
 │  "Am I about to MODIFY, CREATE, or WRITE to a file?"   │
 │                                                          │
-│  ✅ YES → I MUST create a task FIRST (no exceptions)    │
+│  ✅ YES → I MUST have a task FIRST (reuse or create)    │
 │  ❌ NO  → I'm only reading/analyzing (no task needed)   │
 │                                                          │
 │  🤔 NOT SURE? → STOP and ASK THE USER!                  │
@@ -47,7 +47,7 @@ Before using **Write** or **Edit** tools on ANY file, you MUST ask yourself:
 
 ### 🚨 THE CORE RULE - SIMPLE & CLEAR
 
-**If you will use Write/Edit tools → Create a task FIRST. No exceptions for code changes.**
+**If you will use Write/Edit tools → Reuse or create a task FIRST. No exceptions for code changes.**
 
 **Task REQUIRED when:**
 - ✅ Changing 1 line of code → **TASK REQUIRED**
@@ -66,27 +66,19 @@ Before using **Write** or **Edit** tools on ANY file, you MUST ask yourself:
 
 **There is NO "too trivial" or "too small" exception for code modifications.**
 
-### ⚠️ WHEN IN DOUBT → ASK THE USER
+### Clarify scope or task selection only
 
-If you're thinking ANY of these:
-- "This is just a quick fix..."
-- "It's only one line..."
-- "This is too small for a task..."
-- "Should I create a task for this?"
-
-**STOP IMMEDIATELY and ask the user:**
-- "Should I create a task for this change?"
-- "This modifies code - should I track it as a task?"
-
-**Never assume. Always ask when uncertain.**
+For an already requested file change, reuse or create its task without asking
+whether to track it. Ask only when the requested scope or matching card is ambiguous;
+keep the 50-70% similarity clarification. Read-only work needs no implementation task.
 
 ### 🔍 Common Mistakes That Are FORBIDDEN
 
 ❌ **"It's just removing one property, I'll skip the task"**
-✅ **WRONG.** Creating task is MANDATORY regardless of size.
+✅ **WRONG.** Reusing or creating a task is MANDATORY regardless of size.
 
 ❌ **"I already made the change, I'll create the task after"**
-✅ **WRONG.** Task MUST be created BEFORE any Write/Edit.
+✅ **WRONG.** Task MUST be reused or created BEFORE any Write/Edit.
 
 ❌ **"The user asked for a quick fix, no time for tasks"**
 ✅ **WRONG.** Task system adds <10 seconds. Always required.
@@ -97,13 +89,13 @@ If you're thinking ANY of these:
 ### ✅ CORRECT WORKFLOW - MEMORIZE THIS ORDER
 
 \`\`\`
-1. User requests code change
+1. User requests code change; complete the session bootstrap first
 2. 🛑 STOP - About to modify files?
 3. ✅ YES → MANDATORY SEQUENCE:
    a) find_related_active_tasks
    b) create_task (if no match found)
    c) start_task
-   d) update_terminal_title
+   d) update_terminal_activity
    e) update_task_plan
    f) NOW you can use Write/Edit tools
    g) update_task_implementation
@@ -114,7 +106,7 @@ If you're thinking ANY of these:
 
 ### 🎯 Task Creation Guidelines - Simple & Clear
 
-**✅ ALWAYS CREATE A TASK when you will:**
+**✅ ALWAYS REUSE OR CREATE A TASK when you will:**
 - Write or modify ANY code file (.js, .jsx, .ts, .py, .css, .html, etc.)
 - Create or edit configuration files that change behavior
 - Write, modify, or fix tests
@@ -134,11 +126,11 @@ If you're thinking ANY of these:
 **🎯 Simple Rule:**
 - **CHANGING files = Task**
 - **READING files = No task**
-- **When in doubt** → If you'll use Write or Edit tools = Create task
+- **When in doubt** → If you'll use Write or Edit tools = Reuse or create task
 
 ### 📋 Mandatory Task System Workflow
 
-**When starting work:**
+**For file changes, after the session bootstrap:**
 
 1. **Check for existing tasks** using \`find_related_active_tasks\`
    - Similarity >70% → Use existing task automatically
@@ -149,13 +141,13 @@ If you're thinking ANY of these:
    - Terminal ID: AUTO-DETECTED from \`CODEAGENTSWARM_CURRENT_QUADRANT\`
    - Project: AUTO-DETECTED from CLAUDE.md "Project Name:" field
 
-3. **Start the task** using \`start_task\` before any work
+3. **Start the task** using \`start_task\` before editing files
    - **🔄 CRITICAL:** \`start_task\` ALWAYS moves tasks to \`in_progress\` status
    - Works for ANY status: \`pending\`, \`in_testing\`, OR \`completed\`
    - **Resuming work?** Just call \`start_task\` - it automatically returns task to \`in_progress\`
-   - **No exceptions:** Always use \`start_task\` when beginning work, regardless of current status
+   - **No exceptions:** Always use \`start_task\` when beginning file changes, regardless of current status
 
-4. **Update agent title** using \`update_terminal_title\` IMMEDIATELY
+4. **Update the activity** using \`update_terminal_activity\`; the session bootstrap already set the title
 
 5. **Update the plan** using \`update_task_plan\` with detailed steps
 
@@ -180,8 +172,8 @@ CodeAgentSwarm shows two different things per agent:
 
 ## 📢 THE RULE
 
-**🚦 FIRST ACTION in a new conversation:** set the GENERAL title from the first user
-request. On later turns, do NOT call \`set_terminal_title\`; update activity instead.
+**After \`check_active\` returns \`active: true\`:** set the GENERAL title from the first user
+request if this conversation has no title. On later turns, do NOT call \`set_terminal_title\`; update activity instead.
 
 **📍 ALWAYS leave a CURRENT SUMMARY before acting.** Right after the title, call
 \`update_terminal_activity\` with your first product-focused step, BEFORE running any other
@@ -253,16 +245,15 @@ mcp__codeagentswarm-tasks__update_terminal_activity(
 
 ### ✅ WHEN CREATING/STARTING A TASK:
 \`\`\`
-1. find_related_active_tasks(...)        ← Check first
-2. create_task(...)                      ← If needed
-3. start_task(task_id=123)
-4. set_terminal_title(                    ← only if this conversation has no title
+1. check_active                         ← Continue only if active: true
+2. set_terminal_title(                    ← only if this conversation has no title
      title="Minimize Agents",
      long_title="Add the ability to minimize and restore agents"
    )
-5. update_task_plan(...)
-6. update_terminal_activity(activity="Adding the minimize button to the header")
-7. ...keep calling update_terminal_activity as your focus moves to new steps...
+3. update_terminal_activity(activity="Adding the minimize button to the header")
+4. find_related_active_tasks(...) → create_task(...) if needed → start_task(task_id=123)
+5. update_task_plan(...) before editing
+6. ...keep calling update_terminal_activity as your focus moves to new steps...
 \`\`\`
 
 **🚨 CRITICAL:** starting another task in the same conversation does not justify retitling it.
@@ -330,11 +321,12 @@ update_terminal_activity(activity="Drafting the release notes")
 \`\`\`
 User: "I want an option to minimize agents"
 Agent:
-  ✅ find_related_active_tasks(...) → create_task(...) → start_task(task_id=42)
+  ✅ check_active → continue only if active: true
   ✅ set_terminal_title(title="Minimize Agents",
        long_title="Add the ability to minimize and restore agents")   ← ONCE
-  ✅ update_task_plan(...)
   ✅ update_terminal_activity(activity="Adding the minimize button to the header")
+  ✅ find_related_active_tasks(...) → create_task(...) if needed → start_task(task_id=42)
+  ✅ update_task_plan(...)
   ✅ update_terminal_activity(activity="Wiring the minimize action in the renderer")
 
 User: "also let me reopen the minimized ones"
@@ -468,18 +460,17 @@ ${includeStatus ? `1. **First request → \`set_terminal_title(title, long_title
    - Continue working OR
    - Update plan and create new task for pending
 
-### 🧪 Testing Flow - NEVER Direct to Completed
+### Testing Flow
 
-**All tasks MUST go through testing:**
+1. Document the implementation with \`update_task_implementation\`.
+2. Call \`complete_task\` from \`in_progress\` to move the task to \`in_testing\`.
+3. Run tests/verify functionality. If tests fail, use \`start_task\` and fix the same task.
+4. After user approval, call \`complete_task\` again from \`in_testing\` to move to \`completed\`.
+   The server also requires a documented implementation and at least 30 seconds since
+   the task's last update.
 
-\`\`\`
-pending → in_progress → in_testing → [USER APPROVAL] → completed
-\`\`\`
-
-1. **First \`complete_task\`** → Moves to \`in_testing\`
-2. **STOP and WAIT** for user approval
-3. **User says "mark as completed"** → Second \`complete_task\`
-4. **NEVER** auto-complete from testing
+**Elapsed time is not approval. Passing tests alone does not authorize completion.**
+Report the status returned by the server and any unmet conditions. Never bypass a rejection.
 
 ### 🤔 Task Continuation Decision
 
@@ -487,7 +478,7 @@ pending → in_progress → in_testing → [USER APPROVAL] → completed
 
 1. **Analyze if related to current task**
 2. **If related:** Continue with same task; record the new step with \`update_terminal_activity\`
-3. **If unrelated (radical topic change):** Ask about new task creation, and set a NEW
+3. **If unrelated (radical topic change):** Reuse or create a task if the requested work modifies files, and set a NEW
    general title with \`set_terminal_title\` — the old title no longer describes this agent
 4. **If clarification:** Answer without new task; keep the activity fresh
 
@@ -633,7 +624,8 @@ Task 3: "Balance gameplay mechanics" (06:18-06:22)
 - \`create_task\` - Auto-detects agent/project
 - \`start_task\` - Mark in_progress
 - \`complete_task\` - First: testing, Second: completed
-- \`update_terminal_title\` - MANDATORY immediately
+- \`set_terminal_title\` - Set the conversation title and goal once, after check_active
+- \`update_terminal_activity\` - Record the current step
 - \`update_task_plan\` - Detailed steps
 - \`update_task_implementation\` - Document changes
 
@@ -754,8 +746,8 @@ CodeAgentSwarm shows two different things per agent:
 
 ## 📢 THE RULE
 
-**🚦 FIRST ACTION in a new conversation:** set the GENERAL title from the first user
-request. On later turns, do NOT call \`set_terminal_title\`; update activity instead.
+**After \`check_active\` returns \`active: true\`:** set the GENERAL title from the first user
+request if this conversation has no title. On later turns, do NOT call \`set_terminal_title\`; update activity instead.
 
 **📍 ALWAYS leave a CURRENT SUMMARY before acting.** Right after the title, call
 \`update_terminal_activity\` with your first product-focused step, BEFORE running any other
@@ -1029,7 +1021,7 @@ Before using **Write** or **Edit** tools on ANY file, you MUST ask yourself:
 │                                                          │
 │  "Am I about to MODIFY, CREATE, or WRITE to a file?"   │
 │                                                          │
-│  ✅ YES → I MUST create a task FIRST (no exceptions)    │
+│  ✅ YES → I MUST have a task FIRST (reuse or create)    │
 │  ❌ NO  → I'm only reading/analyzing (no task needed)   │
 │                                                          │
 │  🤔 NOT SURE? → STOP and ASK THE USER!                  │
@@ -1038,7 +1030,7 @@ Before using **Write** or **Edit** tools on ANY file, you MUST ask yourself:
 
 ### 🚨 THE CORE RULE - SIMPLE & CLEAR
 
-**If you will use Write/Edit tools → Create a task FIRST. No exceptions for code changes.**
+**If you will use Write/Edit tools → Reuse or create a task FIRST. No exceptions for code changes.**
 
 **Task REQUIRED when:**
 - ✅ Changing 1 line of code → **TASK REQUIRED**
@@ -1057,27 +1049,19 @@ Before using **Write** or **Edit** tools on ANY file, you MUST ask yourself:
 
 **There is NO "too trivial" or "too small" exception for code modifications.**
 
-### ⚠️ WHEN IN DOUBT → ASK THE USER
+### Clarify scope or task selection only
 
-If you're thinking ANY of these:
-- "This is just a quick fix..."
-- "It's only one line..."
-- "This is too small for a task..."
-- "Should I create a task for this?"
-
-**STOP IMMEDIATELY and ask the user:**
-- "Should I create a task for this change?"
-- "This modifies code - should I track it as a task?"
-
-**Never assume. Always ask when uncertain.**
+For an already requested file change, reuse or create its task without asking
+whether to track it. Ask only when the requested scope or matching card is ambiguous;
+keep the 50-70% similarity clarification. Read-only work needs no implementation task.
 
 ### 🔍 Common Mistakes That Are FORBIDDEN
 
 ❌ **"It's just removing one property, I'll skip the task"**
-✅ **WRONG.** Creating task is MANDATORY regardless of size.
+✅ **WRONG.** Reusing or creating a task is MANDATORY regardless of size.
 
 ❌ **"I already made the change, I'll create the task after"**
-✅ **WRONG.** Task MUST be created BEFORE any Write/Edit.
+✅ **WRONG.** Task MUST be reused or created BEFORE any Write/Edit.
 
 ❌ **"The user asked for a quick fix, no time for tasks"**
 ✅ **WRONG.** Task system adds <10 seconds. Always required.
@@ -1088,7 +1072,7 @@ If you're thinking ANY of these:
 ### ✅ CORRECT WORKFLOW - MEMORIZE THIS ORDER
 
 \`\`\`
-1. User requests code change
+1. User requests code change; check_active must return active: true first
 2. 🛑 STOP - About to modify files?
 3. ✅ YES → MANDATORY SEQUENCE:
    a) find_related_active_tasks
@@ -1104,7 +1088,7 @@ If you're thinking ANY of these:
 
 ### 🎯 Task Creation Guidelines - Simple & Clear
 
-**✅ ALWAYS CREATE A TASK when you will:**
+**✅ ALWAYS REUSE OR CREATE A TASK when you will:**
 - Write or modify ANY code file (.js, .jsx, .ts, .py, .css, .html, etc.)
 - Create or edit configuration files that change behavior
 - Write, modify, or fix tests
@@ -1124,11 +1108,11 @@ If you're thinking ANY of these:
 **🎯 Simple Rule:**
 - **CHANGING files = Task**
 - **READING files = No task**
-- **When in doubt** → If you'll use Write or Edit tools = Create task
+- **When in doubt** → If you'll use Write or Edit tools = Reuse or create task
 
 ### 📋 Mandatory Task System Workflow
 
-**When starting work:**
+**For file changes, after \`check_active\` returns \`active: true\`:**
 
 1. **Check for existing tasks** using \`find_related_active_tasks\`
    - Similarity >70% → Use existing task automatically
@@ -1139,11 +1123,11 @@ If you're thinking ANY of these:
    - Terminal ID: AUTO-DETECTED from \`CODEAGENTSWARM_CURRENT_QUADRANT\`
    - Project: AUTO-DETECTED from CLAUDE.md "Project Name:" field
 
-3. **Start the task** using \`start_task\` before any work
+3. **Start the task** using \`start_task\` before editing files
    - **🔄 CRITICAL:** \`start_task\` ALWAYS moves tasks to \`in_progress\` status
    - Works for ANY status: \`pending\`, \`in_testing\`, OR \`completed\`
    - **Resuming work?** Just call \`start_task\` - it automatically returns task to \`in_progress\`
-   - **No exceptions:** Always use \`start_task\` when beginning work, regardless of current status
+   - **No exceptions:** Always use \`start_task\` when beginning file changes, regardless of current status
 
 4. **Update the plan** using \`update_task_plan\` with detailed steps
 
@@ -1167,18 +1151,17 @@ If you're thinking ANY of these:
    - Continue working OR
    - Update plan and create new task for pending
 
-### 🧪 Testing Flow - NEVER Direct to Completed
+### Testing Flow
 
-**All tasks MUST go through testing:**
+1. Document the implementation with \`update_task_implementation\`.
+2. Call \`complete_task\` from \`in_progress\` to move the task to \`in_testing\`.
+3. Run tests/verify functionality. If tests fail, use \`start_task\` and fix the same task.
+4. After user approval, call \`complete_task\` again from \`in_testing\` to move to \`completed\`.
+   The server also requires a documented implementation and at least 30 seconds since
+   the task's last update.
 
-\`\`\`
-pending → in_progress → in_testing → [USER APPROVAL] → completed
-\`\`\`
-
-1. **First \`complete_task\`** → Moves to \`in_testing\`
-2. **STOP and WAIT** for user approval
-3. **User says "mark as completed"** → Second \`complete_task\`
-4. **NEVER** auto-complete from testing
+**Elapsed time is not approval. Passing tests alone does not authorize completion.**
+Report the status returned by the server and any unmet conditions. Never bypass a rejection.
 
 ### 🤔 Task Continuation Decision
 
@@ -1186,7 +1169,7 @@ pending → in_progress → in_testing → [USER APPROVAL] → completed
 
 1. **Analyze if related to current task**
 2. **If related:** Continue with same task
-3. **If unrelated:** Ask about new task creation
+3. **If unrelated:** Reuse or create a task if the requested work modifies files
 4. **If clarification:** Answer without new task
 
 **🎯 IMPORTANT: Fixing Issues During Development**

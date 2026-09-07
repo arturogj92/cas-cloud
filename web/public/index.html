@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, shrink-to-fit=no" />
+    <title>%WEB_TITLE%</title>
+    <style id="expo-reset">
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        overflow: hidden;
+        touch-action: manipulation;
+        background: var(--cas-bootstrap-bg);
+      }
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+      * {
+        scrollbar-color: var(--cas-scrollbar-thumb, rgba(128, 128, 128, .28)) transparent;
+        scrollbar-width: thin;
+      }
+      *::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      *::-webkit-scrollbar-track,
+      *::-webkit-scrollbar-corner {
+        background: transparent;
+      }
+      *::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background: var(--cas-scrollbar-thumb, rgba(128, 128, 128, .28));
+        background-clip: padding-box;
+      }
+      *::-webkit-scrollbar-thumb:hover {
+        background: var(--cas-scrollbar-thumb-hover, rgba(128, 128, 128, .5));
+        background-clip: padding-box;
+      }
+      *::-webkit-scrollbar-button {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      body > input[type="file"] {
+        display: block !important;
+        position: fixed;
+        left: var(--file-picker-left, 0);
+        bottom: var(--file-picker-bottom, 0);
+        width: var(--file-picker-width, 1px);
+        height: var(--file-picker-height, 1px);
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
+    <script>
+      try {
+        const backgrounds = { dark: '#050506', neon: '#0e0817', white: '#f7f3eb', sage: '#edf3f0' };
+        const deviceTheme = matchMedia('(prefers-color-scheme: light)').matches ? 'white' : 'dark';
+        const savedTheme = localStorage.getItem('cas.mobile.theme.v1');
+        const freshInstall = !savedTheme && !localStorage.getItem('cas.mobile.device-id.v1');
+        const theme = savedTheme || (freshInstall ? 'neon' : deviceTheme);
+        if (freshInstall) localStorage.setItem('cas.mobile.theme.v1', theme);
+        document.documentElement.style.setProperty('--cas-bootstrap-bg', backgrounds[theme] || backgrounds[deviceTheme]);
+      } catch (_) {
+        document.documentElement.style.setProperty('--cas-bootstrap-bg', '#050506');
+      }
+      document.addEventListener('gesturestart', (event) => event.preventDefault(), { passive: false });
+    </script>
+  </head>
+
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>

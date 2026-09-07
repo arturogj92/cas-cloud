@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "CAS Cloud",
+    "slug": "cas-cloud-web",
+    "version": "1.0.1",
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/brand/isotipo.png"
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-font"
+    ]
+  }
+}

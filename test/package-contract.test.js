@@ -23,12 +23,13 @@ test('rejects unsupported Node versions before startup and accepts the minimum',
   assert.strictEqual(manifest.engines.node, '>=22.19.0');
 });
 
-test('declares the noncommercial source license explicitly', () => {
-  assert.strictEqual(manifest.license, 'PolyForm-Noncommercial-1.0.0');
-  assert.match(
-    fs.readFileSync(path.join(packageRoot, 'NOTICE'), 'utf8').trim(),
-    /^Required Notice: Copyright 2026 Arturo Garcia\. Commercial licensing: hello@codeagentswarm\.com\.\nRequired Notice: No trademark license is granted for the CAS Cloud or CodeAgentSwarm names or logos\. Truthful references to the original project are not prohibited\.$/,
-  );
+test('declares the open-source license explicitly', () => {
+  assert.strictEqual(manifest.license, 'AGPL-3.0-only');
+  const notice = fs.readFileSync(path.join(packageRoot, 'NOTICE'), 'utf8');
+  assert.match(notice, /Copyright 2026 Arturo Garcia/);
+  assert.match(notice, /AGPL-3.0-only/);
+  assert.match(notice, /No trademark license is granted/);
+  assert.match(fs.readFileSync(path.join(packageRoot, 'LICENSE'), 'utf8'), /GNU AFFERO GENERAL PUBLIC LICENSE/);
 });
 
 test('publishes under the CodeAgentSwarm scope with a direct npx executable', () => {

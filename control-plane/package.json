@@ -1,0 +1,19 @@
+{
+  "name": "cas-cloud-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file=.env server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.9.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,12 @@
+FROM node:22-bookworm-slim AS build
+WORKDIR /app
+COPY package*.json ./
+COPY scripts ./scripts
+RUN npm ci
+COPY . .
+ARG EXPO_PUBLIC_MOBILE_RELAY_URL
+ENV EXPO_PUBLIC_MOBILE_RELAY_URL=$EXPO_PUBLIC_MOBILE_RELAY_URL
+RUN npm run export:web -- --max-workers 2
+
+FROM caddy:2-alpine
+COPY --from=build /app/dist /srv

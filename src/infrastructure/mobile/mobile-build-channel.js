@@ -8,6 +8,16 @@ function resolveMobileBuildChannel(channel) {
 }
 
 function mobileWebOrigin(channel) {
+  if (process.env.CAS_WEB_ORIGIN) {
+    const value = process.env.CAS_WEB_ORIGIN;
+    const url = new URL(value);
+    if (url.origin !== value || url.username || url.password
+      || (url.protocol !== 'https:' && !(url.protocol === 'http:'
+        && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
+      throw new Error('CAS_WEB_ORIGIN must be an HTTPS origin (HTTP is allowed on loopback)');
+    }
+    return value;
+  }
   return resolveMobileBuildChannel(channel) === PRODUCTION_CHANNEL
     ? PRODUCTION_MOBILE_WEB_ORIGIN
     : DEVELOPMENT_MOBILE_WEB_ORIGIN;

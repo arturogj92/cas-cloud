@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cas-cloud-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-08",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "RUNTIMES",
+        "class_name": "RuntimeRelay"
+      }
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "RELAY_QUOTA",
+      "database_name": "cas-cloud-relay-quota",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RuntimeRelay"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}

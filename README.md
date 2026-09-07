@@ -1,11 +1,95 @@
-# CAS Cloud CLI
+# CAS Cloud
 
-Run CAS Cloud on a macOS or Ubuntu host and connect through the encrypted CodeAgentSwarm relay. The host opens no inbound port and exposes only the projects passed to `serve`.
+**Run Codex, Claude, Kimi and more in one app — with projects, Kanban and parallel agent sessions.**
+
+Give each agent a job, follow its progress and review its work in a shared
+workspace. CAS Cloud brings **Codex, Claude, OpenCode, Kimi, Antigravity, Grok,
+Cursor and Pi** together with live conversations, project files, Git changes
+and a Kanban board.
+
+Your agents run on your Mac, Linux machine or VPS. Connect through
+CodeAgentSwarm Desktop or your own web app, and keep working from your computer
+or phone while the host stays online. Use your own provider accounts and,
+with the included self-hosting stack, your own web client, API and relay.
+
+![CAS Cloud web client showing six agent sessions across a travel app, a SaaS portal and an online store, with different work states and an open conversation](media/sessions.png)
+
+*The real web interface with a fictional sample workspace. Projects, conversations
+and results in these screenshots are demonstration data.*
+
+## Your agents, projects and tasks in one workspace
+
+### Work with the agent you choose
+
+- **Eight coding agents in one interface.** Use Codex, Claude, OpenCode, Kimi,
+  Antigravity, Grok, Cursor and Pi with your existing provider accounts.
+- **Parallel sessions across projects.** Let Codex build a feature while Claude
+  reviews another project and Kimi investigates a bug.
+- **Live chat and tool activity.** Send prompts, follow streamed replies and
+  see the commands and tools your agents use.
+- **Approvals and questions.** Approve commands and answer questions from the
+  same conversation, including from your phone.
+- **Models and reasoning controls.** Choose the model, reasoning effort and
+  permission options supported by each provider.
+- **Conversation history and handoffs.** Reopen supported conversations or
+  continue with another agent using a context handoff. Resumable sessions are
+  restored after host restarts.
+
+### Keep the whole project in view
+
+- **Projects in one place.** Register existing folders, clone repositories and
+  launch agents in the project you want to work on.
+- **A built-in Kanban board.** Create tasks, organize the backlog and move work
+  through To do, In progress, Testing and Done alongside your conversations.
+- **Agent goals, activity and status.** See what each session is doing and
+  which agents are Working, waiting for input, ready for testing or Done.
+- **Files and Git without leaving the app.** Browse and search project files,
+  read source, inspect diffs and commit history, and manage branches.
+- **Attachments and shortcuts.** Give supported agents files or images for
+  context, and save project-and-agent shortcuts to launch recurring work quickly.
+
+![CAS Cloud Kanban board for a travel app, with offline planning tasks in To do, In progress, Testing and Done](media/kanban.png)
+
+*Keep the project backlog and its progress alongside your agent conversations.*
+
+### Keep work moving from anywhere
+
+- **Desktop and browser access.** Connect from CodeAgentSwarm Desktop or the
+  included web client on a computer or phone.
+- **Agents that stay on the host.** Leave work running on your Mac, Linux
+  machine or VPS while you switch clients or close the browser.
+- **Communication between sessions.** With approved links and session
+  communication enabled, ask an agent to consult another eligible session or
+  start work on a linked machine.
+- **Your own infrastructure.** Self-host the web client, API and Cloudflare
+  relay. Pair devices with temporary codes, revoke access when needed and
+  exchange messages through the end-to-end encrypted relay.
+
+## Choose how to connect
+
+| | With CodeAgentSwarm Desktop | With your own infrastructure |
+| --- | --- | --- |
+| Where agents run | Your Mac, Linux machine or VPS | Your Mac, Linux machine or VPS |
+| Client | CodeAgentSwarm Desktop | The included web client; Desktop can also connect |
+| Connection infrastructure | CodeAgentSwarm's hosted relay and API | Your Cloudflare relay and independent API |
+| What you deploy | The CAS Cloud host | Host, web client, API and relay |
+| Start here | [Install the host](#install) | [Self-hosting guide](self-hosting/README.md) |
+
+Both options use the encrypted relay protocol. The agent host opens no public
+inbound port and exposes only the projects you register. Browser clients pair
+with a one-time code; pairing gives each device a revocable credential.
 
 ## Install
 
-Node.js 22.19.0 or newer, npm, and macOS or Linux are required. CAS Cloud installs
-every supported provider, including Pi, which requires this Node version.
+Use Node.js 22.19.0 or newer, npm and Git on the machine that runs your agents.
+Sign in to the providers you want to use on that machine. Connecting through
+CodeAgentSwarm Desktop does not require Docker, Caddy or a Cloudflare account.
+
+For a fully self-hosted installation, see the
+[requirements and deployment options](self-hosting/README.md#requirements).
+Caddy is the web server used by the supplied example; you can use an existing
+HTTPS server or static hosting instead. Node runs the agent host and API; the
+compiled web client needs only a browser and static hosting.
 
 ```sh
 npm install --global @codeagentswarm/cas-cloud
@@ -18,7 +102,7 @@ cas-cli serve \
 ```
 
 `npx @codeagentswarm/cas-cloud serve ...` works without a global install. Before opening
-the relay, `serve` checks and installs all supported agent CLIs and the
+the relay, `serve` checks and installs the supported agent CLIs and the
 bundled CodeAgentSwarm MCP. It also installs the guarded global instructions
 that publish each session's title, activity and work-phase status. Run
 `cas-cli setup` to perform that same setup explicitly.
@@ -57,20 +141,12 @@ links approved, a Mac session can perform the same explicit read, remote start,
 or focused request/response exchange with an eligible CAS Cloud session. Those
 messages stay end-to-end encrypted and are not retained for replay by the relay.
 
-Except for components identified in `THIRD_PARTY_NOTICES.md`, this is
-source-available software under the PolyForm Noncommercial License 1.0.0, not
-OSI-approved open source. Commercial use of Arturo Garcia's CAS Cloud code
-requires a separate written license from Arturo Garcia. Contact
-`hello@codeagentswarm.com` for commercial licensing.
-
-CAS Cloud is not a separate rewrite of CodeAgentSwarm. This repository is a
-generated, independently buildable release mirror of the shared headless runtime.
-The canonical private source exports only that tested runtime boundary; Desktop,
-Mobile, the control plane and deployment secrets are not included.
-
 `cas-cli` is the collision-safe executable name. The `cas-cloud` alias lets npm
 infer the executable for `npx @codeagentswarm/cas-cloud`; the shorter `cas` alias
 is also installed.
+
+<details>
+<summary>Optional: development previews</summary>
 
 ## Ephemeral development previews
 
@@ -103,7 +179,10 @@ deployment-level defaults. Without deployment configuration it stays local, uses
 the current directory as its root, places the control socket in `XDG_RUNTIME_DIR`
 or the OS temporary directory, and prints a loopback URL.
 
-Mobile and Desktop show all supported provider CLIs. On CAS Cloud, Mobile exposes
+
+</details>
+
+Mobile and Desktop show the supported provider CLIs. On CAS Cloud, Mobile exposes
 provider status and one **Sign in** button; the host launches the provider's
 official login and keeps its credentials locally. Codex uses device
 authentication so no callback port is required on the VPS. Provider accounts
@@ -113,9 +192,12 @@ overrides the identity file. Otherwise Linux stores it under
 `$XDG_CONFIG_HOME/codeagentswarm` when `XDG_CONFIG_HOME` is absolute, or
 `~/.config/codeagentswarm`.
 
-CAS Cloud supports Claude, Codex, Antigravity, OpenCode, Kimi, Grok, Cursor, and Pi through the shared CodeAgentSwarm driver layer.
+CAS Cloud supports Claude, Codex, Antigravity, OpenCode, Kimi, Grok, Cursor and Pi through the shared CodeAgentSwarm driver layer.
 It publishes the same account-usage quotas as Desktop, and Mobile Settings can add,
 edit or remove the project shortcuts stored by this CAS Cloud runtime.
+
+<details>
+<summary>Run as a Linux service, update and recover</summary>
 
 ## Linux user service with automatic updates
 
@@ -211,6 +293,9 @@ has no inbound listener. `SIGUSR1` prints a fresh five-minute code without
 stopping active sessions. A service restart now reopens every resumable active
 session automatically.
 
+
+</details>
+
 ## Smoke check
 
 On Ubuntu or macOS, run the installed `cas-cli` binary's local checks without
@@ -221,6 +306,21 @@ starting a relay connection or writing CLI state:
 ```
 
 Set `CAS_CLI_BIN` when the binary is not on `PATH`, or `CAS_CLI_PACKAGE_DIR`
-for a non-global installation. The script checks Node 22.19.0+, `doctor`, and an
+for a non-global installation. The script checks the installed Node runtime, `doctor`, and an
 in-memory `better-sqlite3` database. It does not verify provider login or relay
 credentials.
+
+## Source and license
+
+Except for components identified in `THIRD_PARTY_NOTICES.md`, CAS Cloud is open
+source under the GNU Affero General Public License, version 3 only
+(`AGPL-3.0-only`). Commercial use is permitted under that license. See `LICENSE`
+and `NOTICE` for the complete terms. Alternative commercial licensing for Arturo
+Garcia's code is available at `hello@codeagentswarm.com`. CodeAgentSwarm Desktop
+has its own proprietary license and is not part of this source distribution.
+
+CAS Cloud is not a separate rewrite of CodeAgentSwarm. This repository is a
+generated, independently buildable release mirror. It includes the shared host
+runtime, browser client in `web/`, independent API in `control-plane/`, Worker in
+`relay/` and deployment templates in `self-hosting/`. Desktop's proprietary UI,
+native mobile packaging, the commercial backend and deployment secrets are excluded.

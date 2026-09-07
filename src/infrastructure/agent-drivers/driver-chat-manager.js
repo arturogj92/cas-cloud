@@ -205,6 +205,7 @@ class DriverChatManager extends EventEmitter {
     accountId,
     cwd,
     model,
+    strictModel = false,
     effort,
     autoApprove = false,
     permissionMode,
@@ -350,6 +351,7 @@ class DriverChatManager extends EventEmitter {
           await waitForStart(run(), signal);
           return true;
         } catch (error) {
+          if (strictModel && label === 'model') throw error;
           if (signal?.aborted || error?.rpcCode == null) throw error;
           rejected.add(label);
           console.warn(`[chat] ${agent}: ${label} preference rejected: ${error.message}`);

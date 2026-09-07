@@ -526,11 +526,11 @@ fi
 curl -X POST "http://127.0.0.1:\${CODEAGENTSWARM_WEBHOOK_PORT:-${devPort}}/webhook" \\
     -H "Content-Type: application/json" \\
     -d "$PAYLOAD" \\
-    --silent --fail 2>/dev/null || \\
+    --silent --fail --connect-timeout 1 --max-time 2 2>/dev/null || \\
 curl -X POST "http://127.0.0.1:\${CODEAGENTSWARM_WEBHOOK_PORT:-${prodPort}}/webhook" \\
     -H "Content-Type: application/json" \\
     -d "$PAYLOAD" \\
-    --silent --fail 2>/dev/null || true
+    --silent --fail --connect-timeout 1 --max-time 2 2>/dev/null || true
 
 exit 0
 `;

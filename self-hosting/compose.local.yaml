@@ -1,0 +1,39 @@
+services:
+  relay:
+    build:
+      context: ../relay
+      dockerfile: ../self-hosting/Dockerfile.relay
+    ports:
+      - '127.0.0.1:8787:8787'
+    volumes:
+      - ../relay/.dev.vars:/app/.dev.vars:ro
+      - relay_state:/app/.wrangler
+    restart: unless-stopped
+  control-plane:
+    build:
+      context: ../control-plane
+      dockerfile: ../self-hosting/Dockerfile.control-plane
+    env_file: ../control-plane/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8788
+      CAS_CLOUD_DATABASE: /app/data/devices.sqlite
+    ports:
+      - '127.0.0.1:8788:8788'
+    volumes:
+      - devices:/app/data
+    restart: unless-stopped
+  web:
+    build:
+      context: ../web
+      dockerfile: ../self-hosting/Dockerfile.web
+      args:
+        EXPO_PUBLIC_MOBILE_RELAY_URL: http://127.0.0.1:8787
+    ports:
+      - '127.0.0.1:8081:80'
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped
+volumes:
+  devices:
+  relay_state:

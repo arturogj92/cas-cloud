@@ -27,3 +27,27 @@ jobs:
       - run: node dist/cas.js --version
       - run: node dist/cas.js doctor
       - run: npm pack --dry-run --json --silent
+
+  self-hosting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            control-plane/package-lock.json
+            relay/package-lock.json
+            web/package-lock.json
+      - run: npm ci --prefix control-plane
+      - run: npm test --prefix control-plane
+      - run: npm ci --prefix relay
+      - run: npm test --prefix relay
+      - run: npm run check --prefix relay
+      - run: npm ci --prefix web
+      - run: npm test --prefix web
+      - run: npm run typecheck --prefix web
+      - run: npm run export:web --prefix web
+        env:
+          EXPO_PUBLIC_MOBILE_RELAY_URL: http://127.0.0.1:8787
