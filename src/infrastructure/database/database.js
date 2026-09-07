@@ -2720,6 +2720,28 @@ class DatabaseManager {
         }
     }
 
+    // Filter before LIMIT so remote search covers the entire project.
+    getTaskPageByProject(projectName, { limit = 25, offset = 0, status, query = '' } = {}) {
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50
+            || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid task page');
+        if (status !== undefined && !['pending', 'in_progress', 'in_testing', 'completed'].includes(status)) {
+            throw new Error('Task status is invalid');
+        }
+        if (typeof query !== 'string' || query.length > 500) throw new Error('Task search is invalid');
+        this.db.function('cas_task_lower', { deterministic: true }, (value) => value.toLowerCase());
+        const where = `project = ? AND (instr(cas_task_lower(coalesce(title, '') || ' ' || coalesce(description, '')
+            || ' ' || coalesce(labels, '') || ' ' || id), ?) > 0)`;
+        const params = [projectName, query.trim().toLowerCase()];
+        const counts = { pending: 0, in_progress: 0, in_testing: 0, completed: 0 };
+        for (const row of this.db.prepare(`SELECT status, count(*) AS total FROM tasks WHERE ${where} GROUP BY status`).all(...params)) {
+            if (Object.hasOwn(counts, row.status)) counts[row.status] = row.total;
+        }
+        const tasks = this.db.prepare(`SELECT * FROM tasks WHERE ${where}${status ? ' AND status = ?' : ''}
+            ORDER BY sort_order ASC, created_at DESC, id DESC LIMIT ? OFFSET ?`)
+            .all(...params, ...(status ? [status] : []), limit + 1, offset);
+        return { tasks, counts };
+    }
+
     getDataVersion() {
         return this.db.pragma('data_version', { simple: true });
     }

@@ -95,6 +95,7 @@ const ACP_PERMISSION_MODE_OPTIONS = Object.freeze([
 ]);
 
 const PERMISSION_MODE_IDS_BY_AGENT = Object.freeze({
+  pi: Object.freeze([CHAT_PERMISSION_MODES.APPROVAL_REQUIRED, CHAT_PERMISSION_MODES.AUTO_ACCEPT_EDITS, CHAT_PERMISSION_MODES.FULL_ACCESS]),
   claude: Object.freeze([
     CHAT_PERMISSION_MODES.APPROVAL_REQUIRED,
     CHAT_PERMISSION_MODES.AUTO_ACCEPT_EDITS,
@@ -129,6 +130,7 @@ const PERMISSION_MODE_IDS_BY_AGENT = Object.freeze({
   antigravity: Object.freeze([CHAT_PERMISSION_MODES.FULL_ACCESS])
 });
 const PERMISSION_AGENT_LABELS = Object.freeze({
+  pi: 'Pi',
   opencode: 'OpenCode',
   kimi: 'Kimi Code',
   grok: 'Grok Build',
@@ -209,7 +211,7 @@ function permissionOptionsForAgent(agent, {
       ))
       .map((option) => ({ ...option }));
   }
-  if (['opencode', 'kimi', 'grok', 'cursor'].includes(agent)) {
+  if (['opencode', 'kimi', 'grok', 'cursor', 'pi'].includes(agent)) {
     return ACP_PERMISSION_MODE_OPTIONS.map((option) => {
       if (
         option.id === CHAT_PERMISSION_MODES.AUTO_ACCEPT_EDITS

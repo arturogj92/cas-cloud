@@ -7,6 +7,8 @@ that an operator may place behind their own TLS reverse proxy.
 
 ## Commands
 
+Use Node.js 22.19.0 or newer with npm on macOS or Linux.
+
 - `npm install`
 - `npm run build`
 - `npm test`
@@ -32,7 +34,7 @@ that an operator may place behind their own TLS reverse proxy.
 - Keep Desktop, Electron UI, mobile UI and product-internal assets out of this repository.
 - Keep the production dependency tree free of `electron`, `electron-builder` and `node-pty`.
 - Use the relay protocol as the client boundary. Do not import a client application.
-- Preserve parity for Claude, Codex, Antigravity, OpenCode, Kimi, Grok and Cursor.
+- Preserve parity for Claude, Codex, Antigravity, OpenCode, Kimi, Grok, Cursor and Pi.
 - Keep credentials in environment variables or the local mode-`0600` configuration file.
 - Keep the exported runtime free of operator-specific domains, filesystem layouts,
   service names, secrets and deployment files. The current product uses the hosted

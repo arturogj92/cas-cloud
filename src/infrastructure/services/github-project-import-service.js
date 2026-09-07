@@ -3,14 +3,18 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const { findRunnableExecutableCandidate } = require('../../shared/utils/executable-candidate');
+const { validateGitUrl, cloneDirectoryName } = require('../headless/headless-project-registry');
+const { cloneProgress } = require('./git-clone-progress');
+const { RemoteProjectLocations } = require('./remote-project-locations');
 
 const REPOSITORY_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]+$/;
 
 class GitHubProjectImportService {
   constructor({
     execFileImpl = execFile,
+    spawnImpl = spawn,
     fsImpl = fs,
     osImpl = os,
     pathImpl = path,
@@ -18,6 +22,7 @@ class GitHubProjectImportService {
     resolveExecutable = null,
   } = {}) {
     this.execFile = execFileImpl;
+    this.spawn = spawnImpl;
     this.fs = fsImpl;
     this.os = osImpl;
     this.path = pathImpl;
@@ -76,6 +81,55 @@ class GitHubProjectImportService {
         }
         resolve({ stdout, stderr });
       });
+    });
+  }
+
+  async _cloneProcess(args, { git, onProgress, signal, timeout = 30 * 60_000 } = {}) {
+    const env = await this._env();
+    const executable = git ? 'git' : await this._findExecutable(env);
+    if (!executable) throw new Error('GitHub CLI is not installed');
+    if (signal?.aborted) throw Object.assign(new Error('Clone cancelled'), { code: 'ABORT_ERR' });
+    return new Promise((resolve, reject) => {
+      const child = this.spawn(executable, args, {
+        env: { ...env, GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https:ssh' },
+        detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let failure;
+      let termination;
+      let stderr = '';
+      let previous = '';
+      const stop = (code) => {
+        if (failure) return;
+        failure = Object.assign(new Error(code === 'ABORT_ERR' ? 'Clone cancelled' : 'Git command timed out'), { code });
+        if (!Number.isInteger(child.pid) || child.pid <= 0) return;
+        if (process.platform === 'win32') {
+          termination = new Promise((done) => execFile('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, done));
+        } else {
+          // Only our detached group: gh, Git and its transport/credential children.
+          try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {}
+        }
+      };
+      const abort = () => stop('ABORT_ERR');
+      const timer = setTimeout(() => stop('ETIMEDOUT'), timeout);
+      timer.unref?.();
+      child.stderr?.on('data', (chunk) => {
+        stderr = (stderr + String(chunk)).slice(-2048);
+        const progress = cloneProgress(stderr);
+        if (progress && JSON.stringify(progress) !== previous) {
+          previous = JSON.stringify(progress);
+          onProgress?.(progress);
+        }
+      });
+      child.once('error', (error) => { failure = error; });
+      child.once('close', async (code) => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+        await termination;
+        if (failure || code !== 0) reject(failure || Object.assign(new Error('Clone failed'), { stderr }));
+        else resolve();
+      });
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
     });
   }
 
@@ -201,10 +255,48 @@ class GitHubProjectImportService {
     };
   }
 
-  async cloneRepository({ repository, baseDirectory }) {
+  async prepareDestination({ baseDirectory = this._defaultBaseDirectory(), childName } = {}) {
+    try {
+      if (typeof baseDirectory !== 'string' || !this.path.isAbsolute(baseDirectory)
+        || baseDirectory.length > 4096 || /[\u0000-\u001f]/.test(baseDirectory)) throw new Error('Enter an absolute destination path.');
+      let base = await this.fs.promises.realpath(baseDirectory);
+      const stat = await this.fs.promises.stat(base);
+      if (!stat.isDirectory() || (process.platform !== 'win32' && !(stat.mode & 0o222))) throw new Error('Choose a writable folder.');
+      await this.fs.promises.access(base, this.fs.constants.R_OK | this.fs.constants.W_OK | this.fs.constants.X_OK);
+      if (childName !== undefined) {
+        if (typeof childName !== 'string' || !childName || childName.length > 255
+          || /[\\/\u0000-\u001f<>:"|?*]/.test(childName) || /^\.{1,2}$/.test(childName) || /[. ]$/.test(childName)) {
+          throw new Error('Enter one folder name without slashes.');
+        }
+        base = this.path.join(base, childName);
+        await this.fs.promises.mkdir(base, { mode: 0o700 });
+      }
+      return { success: true, path: base };
+    } catch (error) {
+      return { success: false, code: 'invalid_destination', error: error.code === 'EEXIST'
+        ? 'That folder already exists. Browse to it or choose another name.'
+        : 'This folder is unavailable or not writable. Choose another destination.' };
+    }
+  }
+
+  async listDestinationFolders(request = {}) {
+    try {
+      if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Invalid folder selection');
+      this.folderLocations ||= new RemoteProjectLocations();
+      const { locationId, folderPath, offset } = request;
+      const listing = this.folderLocations.list({ locationId, folderPath, offset, includePath: true }, [this._defaultBaseDirectory()]);
+      // Local destinations retain the desktop user's existing permission policy.
+      const destination = await this.prepareDestination({ baseDirectory: listing.folderPath });
+      return { success: true, ...listing, writable: destination.success };
+    } catch (_) {
+      return { success: false, error: 'This folder is unavailable. Choose another location.' };
+    }
+  }
+
+  async cloneRepository({ repository, baseDirectory, url }, { onProgress, signal } = {}) {
     const fullName = String(repository || '').trim();
     const rawBase = String(baseDirectory || '').trim();
-    if (!REPOSITORY_PATTERN.test(fullName)) {
+    if (!url && !REPOSITORY_PATTERN.test(fullName)) {
       return { success: false, code: 'invalid_repository', error: 'Invalid GitHub repository' };
     }
     if (!rawBase || !this.path.isAbsolute(rawBase)) {
@@ -220,7 +312,10 @@ class GitHubProjectImportService {
       return { success: false, code: 'invalid_destination', error: this._message(error) };
     }
 
-    const name = fullName.split('/')[1];
+    let name;
+    try { name = url ? cloneDirectoryName(validateGitUrl(url)) : fullName.split('/')[1]; } catch (_) {
+      return { success: false, code: 'invalid_git_url', error: 'Enter a supported HTTPS or SSH Git URL.' };
+    }
     const destination = this.path.resolve(base, name);
     if (this.path.dirname(destination) !== base) {
       return { success: false, code: 'invalid_destination', error: 'Invalid destination directory' };
@@ -229,13 +324,37 @@ class GitHubProjectImportService {
       return { success: false, code: 'destination_exists', error: 'The destination folder already exists', path: destination };
     }
 
+    let staging;
+    let stagingIdentity;
     try {
-      await this._run(['repo', 'clone', fullName, destination], { timeout: 30 * 60_000 });
-      const stats = await this.fs.promises.stat(destination);
+      const baseRealPath = await this.fs.promises.realpath(base);
+      const baseIdentity = await this.fs.promises.stat(base);
+      staging = await this.fs.promises.mkdtemp(this.path.join(base, '.cas-import-'));
+      stagingIdentity = await this.fs.promises.lstat(staging);
+      const cloneDestination = this.path.join(staging, 'repository');
+      await this._cloneProcess(url
+        ? ['-c', 'protocol.file.allow=never', 'clone', '--progress', '--', url, cloneDestination]
+        : ['repo', 'clone', fullName, cloneDestination, '--', '--progress'],
+      { timeout: 30 * 60_000, git: !!url, onProgress, signal });
+      const stats = await this.fs.promises.lstat(cloneDestination);
       if (!stats.isDirectory()) throw new Error('GitHub CLI did not create the repository directory');
-      return { success: true, path: destination, repository: fullName };
+      const currentBase = await this.fs.promises.stat(base);
+      const currentStaging = await this.fs.promises.lstat(staging);
+      if (await this.fs.promises.realpath(base) !== baseRealPath || currentBase.dev !== baseIdentity.dev
+        || currentBase.ino !== baseIdentity.ino || currentStaging.dev !== stagingIdentity.dev
+        || currentStaging.ino !== stagingIdentity.ino) throw new Error('The destination changed. Choose it again.');
+      if (this.fs.existsSync(destination)) return { success: false, code: 'destination_exists', error: 'The destination folder already exists.' };
+      await this.fs.promises.rename(cloneDestination, destination);
+      return { success: true, path: destination, repository: fullName || name };
     } catch (error) {
       return { success: false, code: error.code || 'clone_failed', error: this._message(error) };
+    } finally {
+      if (staging && stagingIdentity) {
+        const current = await this.fs.promises.lstat(staging).catch(() => null);
+        if (current?.isDirectory() && current.dev === stagingIdentity.dev && current.ino === stagingIdentity.ino) {
+          await this.fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+        }
+      }
     }
   }
 }

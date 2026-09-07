@@ -4,9 +4,8 @@ set -eu
 cas_cli_bin=${CAS_CLI_BIN:-cas-cli}
 package_dir=${CAS_CLI_PACKAGE_DIR:-}
 
-node_major=$(node -p "process.versions.node.split('.')[0]")
-if [ "$node_major" -lt 20 ]; then
-  echo "Node.js 20 or newer is required; found $(node --version)." >&2
+if ! node -e "const [major, minor] = process.versions.node.split('.').map(Number); process.exit(major > 22 || (major === 22 && minor >= 19) ? 0 : 1)"; then
+  echo "Node.js 22.19.0 or newer is required; found $(node --version)." >&2
   exit 1
 fi
 

@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { RemoteProjectLocations } = require('../services/remote-project-locations');
+const { cloneProgress } = require('../services/git-clone-progress');
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_CLONES = 2;
@@ -366,7 +367,9 @@ class HeadlessProjectRegistry {
     return this.locations.list(payload, this.db.prepare('SELECT path FROM runtime_project_roots').all().map((root) => root.path));
   }
 
-  addLocation({ locationId }) {
+  addLocation({ locationId, childName }) {
+    if (childName !== undefined && this.getRoots().length >= 100) throw new Error('At most 100 project locations can be saved');
+    if (childName !== undefined) locationId = this.locations.createFolder(locationId, childName).locationId;
     const resolved = this.locations.writable(locationId);
     const existing = this.db.prepare('SELECT root_id FROM runtime_project_roots WHERE path = ?').get(resolved);
     if (existing) return { rootId: existing.root_id, name: path.basename(resolved) };
@@ -717,7 +720,7 @@ class HeadlessProjectRegistry {
     this._emitOperation(operation.operationId, operation.requestId, 'running');
     let child;
     try {
-      child = this.spawnImpl('git', ['-c', 'protocol.file.allow=never', ...operation.gitConfig, 'clone', '--', operation.url, operation.temporaryDestination], {
+      child = this.spawnImpl('git', ['-c', 'protocol.file.allow=never', ...operation.gitConfig, 'clone', '--progress', '--', operation.url, operation.temporaryDestination], {
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https:ssh' },
@@ -728,7 +731,15 @@ class HeadlessProjectRegistry {
     operation.child = child;
     let stderr = '';
     child.stdout?.on('data', () => {});
-    child.stderr?.on('data', (chunk) => { stderr = `${stderr}${String(chunk)}`.slice(-8192); });
+    let previousProgress = '';
+    child.stderr?.on('data', (chunk) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-8192);
+      const progress = cloneProgress(stderr);
+      if (progress && JSON.stringify(progress) !== previousProgress && !operation.cancelRequested) {
+        previousProgress = JSON.stringify(progress);
+        this._emitOperation(operation.operationId, operation.requestId, 'running', progress);
+      }
+    });
     child.once('error', (error) => {
       this._finish(operation, 'failed', error.code === 'ENOENT' ? 'git_not_found' : 'clone_failed');
     });

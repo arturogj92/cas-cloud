@@ -203,7 +203,14 @@ class ProviderLoginManager extends EventEmitter {
     const result = await this._runToCompletion(binary, args, env);
     const resolvedAccountId = env.CODEAGENTSWARM_PROVIDER_ACCOUNT_ID || accountId || 'current';
     if (!result) return this._emitStatus(agent, resolvedAccountId, { known: false });
-    return this._emitStatus(agent, resolvedAccountId, { known: true, ...interpretStatus(agent, result) });
+    const status = interpretStatus(agent, result);
+    if (agent === 'codex' && status.loggedIn) {
+      // `codex login status` never prints who is signed in. Two profiles can
+      // silently hold the same ChatGPT login, so surface the real identity.
+      const identity = codexIdentityFromHome(env.CODEX_HOME);
+      if (identity) status.detail = identity;
+    }
+    return this._emitStatus(agent, resolvedAccountId, { known: true, ...status });
   }
 
   _emitStatus(agent, accountId, status) {
@@ -333,6 +340,31 @@ function interpretStatus(agent, { code, output }) {
   return { loggedIn: code === 0 && !signedOut, detail: output.split('\n')[0] || '' };
 }
 
+/**
+ * The e-mail of the ChatGPT login stored in a Codex home, read from the id
+ * token's payload (display only; nothing is verified or sent anywhere).
+ * @param {string} [codexHome] defaults to ~/.codex
+ * @returns {string} e-mail or '' when unknown
+ */
+function codexIdentityFromHome(codexHome) {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const home = codexHome || path.join(os.homedir(), '.codex');
+    const auth = JSON.parse(fs.readFileSync(path.join(home, 'auth.json'), 'utf8'));
+    const token = auth?.tokens?.id_token;
+    if (typeof token !== 'string') return '';
+    const [, payload] = token.split('.');
+    if (!payload) return '';
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const email = claims.email || claims['https://api.openai.com/profile']?.email;
+    return typeof email === 'string' ? email : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 function safeRequireRegistry() {
   try {
     return require('../platform/spawned-process-registry');
@@ -341,4 +373,4 @@ function safeRequireRegistry() {
   }
 }
 
-module.exports = { ProviderLoginManager, interpretStatus };
+module.exports = { ProviderLoginManager, interpretStatus, codexIdentityFromHome };

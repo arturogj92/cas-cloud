@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseArgs } = require('util');
 const qrcode = require('qrcode');
+const { meetsVersion } = require('../infrastructure/services/node-runtime');
 const { AGENT_BINARIES, AGENT_IDS, HeadlessProviderService } = require('../infrastructure/headless/headless-provider-service');
 const { setupHeadlessMcp } = require('../infrastructure/headless/headless-mcp-setup');
 const { updateInstallation } = require('../infrastructure/headless/headless-updater');
@@ -118,7 +119,7 @@ async function unlinkRemoteRuntime({ output = console.log, request = requestHead
 async function doctor() {
   const supportedPlatform = process.platform === 'darwin' || process.platform === 'linux';
   console.log(`Platform: ${process.platform} ${supportedPlatform ? '✓' : 'unsupported'}`);
-  console.log(`Node: ${process.version} ${Number(process.versions.node.split('.')[0]) >= 20 ? '✓' : '(Node 20+ required)'}`);
+  console.log(`Node: ${process.version} ${meetsVersion(process.versions.node, '22.19.0') ? '✓' : '(Node 22.19.0+ required)'}`);
   console.log(`CAS account: ${process.env.CAS_ACCESS_TOKEN || fs.existsSync(path.join(appDataPath(), 'auth-data.json')) ? 'available ✓' : 'sign in required'}`);
   const providers = new HeadlessProviderService();
   const inspected = await Promise.all(AGENT_IDS.map((agent) => providers.inspect(agent, { includePath: true })));

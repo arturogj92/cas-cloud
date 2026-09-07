@@ -15,6 +15,7 @@ const OpencodeConfigStrategy = require('./opencode-config-strategy');
 const KimiConfigStrategy = require('./kimi-config-strategy');
 const GrokConfigStrategy = require('./grok-config-strategy');
 const CursorConfigStrategy = require('./cursor-config-strategy');
+const PiConfigStrategy = require('./pi-config-strategy');
 
 class AgentConfigRegistry {
     constructor({ isDevMode = false } = {}) {
@@ -37,6 +38,7 @@ class AgentConfigRegistry {
         this.register('kimi', new KimiConfigStrategy());
         this.register('grok', new GrokConfigStrategy());
         this.register('cursor', new CursorConfigStrategy());
+        this.register('pi', new PiConfigStrategy());
     }
 
     /**

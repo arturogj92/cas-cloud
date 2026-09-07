@@ -10,7 +10,7 @@ const {
 } = require('../agent-drivers/provider-login');
 const { initializeCliAgentRegistry } = require('../services/cli-agents/cli-agent-registry-bootstrap');
 
-const AGENT_IDS = Object.freeze(['claude', 'codex', 'antigravity', 'opencode', 'kimi', 'grok', 'cursor']);
+const AGENT_IDS = Object.freeze(['claude', 'codex', 'antigravity', 'opencode', 'kimi', 'grok', 'cursor', 'pi']);
 const AGENT_BINARIES = Object.freeze({
   claude: ['claude'],
   codex: ['codex'],
@@ -19,6 +19,7 @@ const AGENT_BINARIES = Object.freeze({
   kimi: [path.join(os.homedir(), '.kimi-code', 'bin', 'kimi'), 'kimi'],
   grok: [path.join(process.env.GROK_HOME || path.join(os.homedir(), '.grok'), 'bin', 'grok'), 'grok'],
   cursor: [path.join(os.homedir(), '.local', 'bin', 'cursor-agent'), 'cursor-agent'],
+  pi: ['pi'],
 });
 
 function findExecutable(candidates, envPath = process.env.PATH || '', fsImpl = fs) {

@@ -97,6 +97,7 @@ async function build() {
     fs.chmodSync(path.resolve(outputFile), 0o755);
   }
   fs.mkdirSync(outputTemplateDirectory, { recursive: true });
+  fs.copyFileSync(path.join(packageDirectory, 'src', 'infrastructure', 'hooks', 'pi-extension.js'), path.join(outputDirectory, 'pi-extension.js'));
   for (const template of titleTemplateFiles) {
     fs.copyFileSync(
       path.join(sourceTemplateDirectory, template),

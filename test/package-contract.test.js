@@ -2,9 +2,26 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
+const { spawnSync } = require('child_process');
 
 const packageRoot = path.resolve(__dirname, '..');
 const manifest = require(path.join(packageRoot, 'package.json'));
+
+test('rejects unsupported Node versions before startup and accepts the minimum', () => {
+  for (const binary of ['cas.js', 'cas-preview.js']) {
+    for (const version of ['20.20.0', '18.20.0', '22.18.0', '22.19.0', '22.20.0', '24.0.0']) {
+      const supported = !['18.20.0', '20.20.0', '22.18.0'].includes(version);
+      const result = spawnSync(process.execPath, [
+        '--import', `data:text/javascript,Object.defineProperty(process.versions,'node',{value:'${version}'})`,
+        path.join(packageRoot, 'dist', binary), '--help',
+      ], { encoding: 'utf8', timeout: 10000 });
+      assert.strictEqual(result.status, supported ? 0 : 1, `${binary} on Node ${version}: ${result.stderr}`);
+      if (!supported) assert.match(result.stderr, /Node.js 22\.19\.0 or newer/);
+      else assert.match(result.stdout, /Usage:/);
+    }
+  }
+  assert.strictEqual(manifest.engines.node, '>=22.19.0');
+});
 
 test('declares the noncommercial source license explicitly', () => {
   assert.strictEqual(manifest.license, 'PolyForm-Noncommercial-1.0.0');

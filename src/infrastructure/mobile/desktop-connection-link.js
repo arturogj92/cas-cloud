@@ -63,7 +63,7 @@ async function resolvePairingInput(raw, fetchImpl = globalThis.fetch) {
 
 function desktopConnectionLink(pairing) {
   const code = normalizeCode(pairing?.pairingCode);
-  if (!code) throw new Error('CAS Cloud did not return a valid pairing code');
+  if (!code) throw new Error('The computer did not return a valid pairing code');
   return `${configuredOrigin()}/connect/${code}`;
 }
 

@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const MAX_CHAT_ATTACHMENTS = 8;
+const MAX_CHAT_ATTACHMENTS = 40;
 const MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CHAT_AUDIO_BYTES = 20 * 1024 * 1024;
 const DATA_URL_HEADER_PATTERN = /^data:((?:image|audio)\/[a-z0-9.+-]+);base64$/i;

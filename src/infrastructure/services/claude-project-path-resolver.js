@@ -385,26 +385,28 @@ function findSessionTranscript(sessionId, projectsDir) {
  * @returns {string|null}
  */
 function findSessionCwd(sessionId, projectsDir) {
+    let fd;
     try {
         const transcript = locateSessionTranscript(sessionId, projectsDir);
         if (!transcript) return null;
-
-        // Every Claude transcript line carries the cwd; the first one is enough
-        // and is bounded, so a huge transcript is never read whole.
-        const head = fs.readFileSync(transcript, 'utf8').slice(0, 64 * 1024);
+        fd = fs.openSync(transcript, 'r');
+        const buffer = Buffer.alloc(64 * 1024);
+        const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+        const head = buffer.toString('utf8', 0, bytesRead);
         for (const line of head.split('\n')) {
             if (!line.trim()) continue;
             try {
                 const parsed = JSON.parse(line);
-                if (parsed && parsed.cwd) return parsed.cwd;
+                if (typeof parsed?.cwd === 'string' && parsed.cwd) return parsed.cwd;
             } catch (_) {
                 // A truncated final line is expected when the head is capped.
             }
         }
         return null;
-    } catch (error) {
-        console.error('[Claude] findSessionCwd failed:', error.message);
+    } catch (_) {
         return null;
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
     }
 }
 

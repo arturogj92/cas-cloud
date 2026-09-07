@@ -10,7 +10,8 @@ function locationError(code, message) {
 }
 
 // Location discovery is an explicit paired-owner action, separate from browsing
-// inside an already authorized project root. Paths never become command input.
+// inside an already authorized project root. Only owner location discovery may
+// accept an absolute path; project commands still use opaque roots and child names.
 class RemoteProjectLocations {
   constructor() {
     this.locations = new Map();
@@ -51,7 +52,7 @@ class RemoteProjectLocations {
     const stat = fs.statSync(resolved);
     const uid = typeof process.geteuid === 'function' ? process.geteuid() : null;
     if (resolved === path.parse(resolved).root
-      || (uid !== null && (stat.uid !== uid || (stat.mode & 0o022) !== 0))) {
+      || (uid !== null && (stat.uid !== uid || (stat.mode & 0o022) !== 0 || (stat.mode & 0o200) === 0))) {
       throw locationError('location_permission_denied', 'Choose a private folder owned by the remote service user, not a whole drive.');
     }
     try { fs.accessSync(resolved, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK); } catch (_) {
@@ -60,8 +61,30 @@ class RemoteProjectLocations {
     return resolved;
   }
 
-  list({ locationId, offset = 0 } = {}, roots = []) {
+  createFolder(locationId, name) {
+    if (typeof name !== 'string' || !name || name.length > 255
+      || /[\\/\u0000-\u001f<>:"|?*]/.test(name) || /^\.{1,2}$/.test(name) || /[. ]$/.test(name)) {
+      throw locationError('location_invalid', 'Enter one folder name without slashes.');
+    }
+    const parent = this.writable(locationId);
+    const destination = path.join(parent, name);
+    // Non-recursive and exclusive: never reuse or overwrite an existing folder.
+    fs.mkdirSync(destination, { mode: 0o700 });
+    if (this.resolve(locationId) !== parent || fs.lstatSync(destination).isSymbolicLink()) {
+      throw locationError('location_expired', 'The folder changed. Browse again.');
+    }
+    return this.remember(destination);
+  }
+
+  list({ locationId, folderPath, includePath = false, offset = 0 } = {}, roots = []) {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100_000) throw new Error('Invalid folder page');
+    if (folderPath !== undefined) {
+      if (locationId || typeof folderPath !== 'string' || !path.isAbsolute(folderPath)
+        || folderPath.length > 4096 || /[\u0000-\u001f]/.test(folderPath)) {
+        throw locationError('location_invalid', 'Enter an absolute path on the selected computer.');
+      }
+      locationId = this.remember(folderPath).locationId;
+    }
     const shortcuts = [os.homedir(), ...roots];
     if (process.platform === 'win32') {
       for (const letter of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') if (fs.existsSync(`${letter}:\\`)) shortcuts.push(`${letter}:\\`);
@@ -80,8 +103,11 @@ class RemoteProjectLocations {
       try { return [this.remember(path.join(current, entry.name))]; } catch (_) { return []; }
     });
     const parent = path.dirname(current);
+    let writable = true;
+    try { this.writable(this.remember(current).locationId); } catch (_) { writable = false; }
     return {
       ...this.remember(current),
+      ...(includePath ? { folderPath: current, writable } : {}),
       parentLocationId: parent === current ? null : this.remember(parent).locationId,
       locations,
       directories,

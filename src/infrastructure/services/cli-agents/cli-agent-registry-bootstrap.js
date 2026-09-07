@@ -6,6 +6,7 @@ const { getInstance: getOpencodeStrategy } = require('./opencode-cli-strategy');
 const { getInstance: getKimiStrategy } = require('./kimi-cli-strategy');
 const { getInstance: getGrokStrategy } = require('./grok-cli-strategy');
 const { getInstance: getCursorStrategy } = require('./cursor-cli-strategy');
+const { getInstance: getPiStrategy } = require('./pi-cli-strategy');
 
 function initializeCliAgentRegistry() {
   const registry = getRegistry();
@@ -16,6 +17,7 @@ function initializeCliAgentRegistry() {
   registry.register('kimi', getKimiStrategy());
   registry.register('grok', getGrokStrategy());
   registry.register('cursor', getCursorStrategy());
+  registry.register('pi', getPiStrategy());
   return registry;
 }
 

@@ -8,6 +8,7 @@ const AGENT_META = Object.freeze({
   kimi: { id: 'kimi', label: 'Kimi Code', icon: 'kimi-icon.png' },
   grok: { id: 'grok', label: 'Grok Build', icon: 'grok-icon.svg' },
   cursor: { id: 'cursor', label: 'Cursor Agent', icon: 'cursor-icon.svg' },
+  pi: { id: 'pi', label: 'Pi (beta)', icon: 'pi-icon.svg' },
 });
 
 const AGENT_ORDER = Object.freeze(Object.keys(AGENT_META));

@@ -206,7 +206,7 @@ function isSafeRelativePath(value) {
   return segments.every((segment) => segment && segment !== '..');
 }
 
-function assertPathlessCommand(value, depth = 0, allowRelativePath = false) {
+function assertPathlessCommand(value, depth = 0, allowRelativePath = false, allowLocationPath = false) {
   if (depth > 40) throw new Error('Remote runtime command is too deeply nested');
   if (Array.isArray(value)) {
     for (const item of value) assertPathlessCommand(item, depth + 1, allowRelativePath);
@@ -215,6 +215,12 @@ function assertPathlessCommand(value, depth = 0, allowRelativePath = false) {
   if (!value || typeof value !== 'object') return;
   for (const [key, child] of Object.entries(value)) {
     const normalized = normalizedKey(key);
+    if (depth === 0 && allowLocationPath && key === 'includePath' && typeof child === 'boolean') continue;
+    if (depth === 0 && allowLocationPath && key === 'folderPath') {
+      if (typeof child !== 'string' || !child || child.length > 4096 || /[\u0000-\u001f]/.test(child)
+        || !/^(?:[A-Za-z]:[\\/]|[/\\])/.test(child)) throw new Error('Remote location path is invalid');
+      continue;
+    }
     if (allowRelativePath && normalized === 'relativepath') {
       if (!isSafeRelativePath(child)) throw new Error('Remote runtime relative path is invalid');
       continue;
@@ -785,7 +791,7 @@ class RemoteRuntimeClient {
     if (command.payload !== undefined) {
       assertPublicPayload(command.payload);
       assertPathlessCommand(command.payload, 0, command.type === 'project.directories.list' || command.type === 'project.register' || command.type === 'project.clone'
-        || command.type.startsWith('workspace.files.'));
+        || command.type.startsWith('workspace.files.'), command.type === 'project.locations.list');
       wire.payload = clone(command.payload);
     }
     return wire;
@@ -1091,6 +1097,14 @@ class RemoteRuntimeClient {
         ? this.pendingCommands.get(envelope.commandId)?.message?.command?.type
         : null;
       safe = stripPathFields(envelope, 0, commandType === 'project.directories.list');
+      // A paired owner's explicit location picker needs the host's path for display.
+      // Never retain it in snapshots, session events or unrelated command results.
+      if (commandType === 'project.locations.list'
+        && this.pendingCommands.get(envelope.commandId)?.message?.command?.payload?.includePath === true
+        && typeof envelope.result?.folderPath === 'string' && envelope.result.folderPath.length <= 4096
+        && !/[\u0000-\u001f]/.test(envelope.result.folderPath)) {
+        safe.result.folderPath = envelope.result.folderPath;
+      }
     } catch {
       const kind = typeof envelope?.kind === 'string' && /^[a-z][a-z0-9.]{0,63}$/.test(envelope.kind)
         ? envelope.kind
@@ -1537,7 +1551,10 @@ class RemoteRuntimeClient {
   }
 
   _publicRuntime() {
-    return this.connection ? { id: this.connection.runtimeId, name: null } : null;
+    return this.connection ? {
+      id: this.connection.runtimeId,
+      name: this.state.runtime?.id === this.connection.runtimeId ? this.state.runtime.name : null,
+    } : null;
   }
 
   _setState(state) {

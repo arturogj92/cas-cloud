@@ -29,6 +29,7 @@ const { CodexAppServerDriver } = require('./codex-app-server-driver');
 const { ClaudeAgentSdkDriver } = require('./claude-agent-sdk-driver');
 const { AcpAgentDriver } = require('./acp-agent-driver');
 const { AntigravityPrintDriver } = require('./antigravity-print-driver');
+const { PiRpcDriver } = require('./pi-rpc-driver');
 const {
   resolveChatReference,
   openChatHtmlReference,
@@ -45,7 +46,8 @@ const SUPPORTED_AGENTS = Object.freeze([
   'kimi',
   'antigravity',
   'grok',
-  'cursor'
+  'cursor',
+  'pi'
 ]);
 const REASONING_CONFIG_IDS = new Set(['effort', 'thinking', 'reasoning_effort']);
 const MAX_MATERIALIZED_CHAT_FILE_BYTES = 64 * 1024 * 1024;
@@ -72,6 +74,7 @@ function waitForStart(promise, signal) {
  * @returns {CodexAppServerDriver|ClaudeAgentSdkDriver|AcpAgentDriver}
  */
 function defaultCreateDriver({ agent, env, binaryPath }) {
+  if (agent === 'pi') return new PiRpcDriver({ env, binaryPath });
   if (agent === 'claude') return new ClaudeAgentSdkDriver({ env, binaryPath });
   if (agent === 'antigravity') return new AntigravityPrintDriver({ env, binaryPath });
   if (agent === 'opencode' || agent === 'kimi' || agent === 'grok' || agent === 'cursor') {
@@ -127,6 +130,10 @@ class DriverChatManager extends EventEmitter {
   /** @returns {number} live session count. */
   get sessionCount() {
     return this._sessions.size;
+  }
+
+  getWorkingDirectories() {
+    return [...this._sessions.values()].map((session) => session.cwd).filter(Boolean);
   }
 
   /**
@@ -247,7 +254,7 @@ class DriverChatManager extends EventEmitter {
       }
     }
     if (cwd && this._isWorkingDirReserved(cwd)) {
-      throw new Error('This worktree is being deleted');
+      throw new Error('This worktree is being cleaned up');
     }
 
     const resolvedEnv = await waitForStart(this._resolveSpawnEnv({
@@ -257,9 +264,6 @@ class DriverChatManager extends EventEmitter {
       terminalUuid,
       cwd
     }), signal);
-    if (cwd && this._isWorkingDirReserved(cwd)) {
-      throw new Error('This worktree is being deleted');
-    }
     // Every CLI's GLOBAL lifecycle hook double-reports under a driver-backed
     // Chat: the driver already receives the authoritative turn/permission
     // events, while the hook also fires for delegated subagent turns (codex,
@@ -273,6 +277,9 @@ class DriverChatManager extends EventEmitter {
       this._resolveDriverOptions({ agent, terminalId }),
       signal
     ) || {};
+    if (cwd && this._isWorkingDirReserved(cwd)) {
+      throw new Error('This worktree is being cleaned up');
+    }
     const {
       model: defaultModel,
       effort: defaultEffort,

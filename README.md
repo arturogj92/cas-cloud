@@ -4,7 +4,8 @@ Run CAS Cloud on a macOS or Ubuntu host and connect through the encrypted CodeAg
 
 ## Install
 
-Node.js 20 or newer is required.
+Node.js 22.19.0 or newer, npm, and macOS or Linux are required. CAS Cloud installs
+every supported provider, including Pi, which requires this Node version.
 
 ```sh
 npm install --global @codeagentswarm/cas-cloud
@@ -17,7 +18,7 @@ cas-cli serve \
 ```
 
 `npx @codeagentswarm/cas-cloud serve ...` works without a global install. Before opening
-the relay, `serve` checks and installs the seven supported agent CLIs and the
+the relay, `serve` checks and installs all supported agent CLIs and the
 bundled CodeAgentSwarm MCP. It also installs the guarded global instructions
 that publish each session's title, activity and work-phase status. Run
 `cas-cli setup` to perform that same setup explicitly.
@@ -102,7 +103,7 @@ deployment-level defaults. Without deployment configuration it stays local, uses
 the current directory as its root, places the control socket in `XDG_RUNTIME_DIR`
 or the OS temporary directory, and prints a loopback URL.
 
-Mobile and Desktop show all seven provider CLIs. On CAS Cloud, Mobile exposes
+Mobile and Desktop show all supported provider CLIs. On CAS Cloud, Mobile exposes
 provider status and one **Sign in** button; the host launches the provider's
 official login and keeps its credentials locally. Codex uses device
 authentication so no callback port is required on the VPS. Provider accounts
@@ -112,7 +113,7 @@ overrides the identity file. Otherwise Linux stores it under
 `$XDG_CONFIG_HOME/codeagentswarm` when `XDG_CONFIG_HOME` is absolute, or
 `~/.config/codeagentswarm`.
 
-CAS Cloud supports Claude, Codex, Antigravity, OpenCode, Kimi, Grok, and Cursor through the shared CodeAgentSwarm driver layer.
+CAS Cloud supports Claude, Codex, Antigravity, OpenCode, Kimi, Grok, Cursor, and Pi through the shared CodeAgentSwarm driver layer.
 It publishes the same account-usage quotas as Desktop, and Mobile Settings can add,
 edit or remove the project shortcuts stored by this CAS Cloud runtime.
 
@@ -134,6 +135,13 @@ suffixes, and replace the project paths in `cas-cli.service`. Keep credentials i
 `CAS_ACCESS_TOKEN` and, when available, `CAS_REFRESH_TOKEN` there. Do not put
 tokens in `ExecStart` or shell history. If Node came from nvm, edit the `PATH=`
 line in both services to include that Node version's `bin` directory.
+
+When upgrading from Node 20 or Node 22 older than 22.19.0, install a supported
+Node version first. Keep it isolated to these services if other applications
+need the old runtime. Stage the new CAS Cloud package with the new Node/npm so
+native dependencies match it. Preserve the previous Node path for rollback:
+restoring an older package also requires its matching Node runtime. Do not run
+an existing Node 20 installation's native dependencies under Node 22.
 
 ```sh
 mkdir -p ~/.config/systemd/user ~/.config/codeagentswarm
@@ -213,6 +221,6 @@ starting a relay connection or writing CLI state:
 ```
 
 Set `CAS_CLI_BIN` when the binary is not on `PATH`, or `CAS_CLI_PACKAGE_DIR`
-for a non-global installation. The script checks Node 20+, `doctor`, and an
+for a non-global installation. The script checks Node 22.19.0+, `doctor`, and an
 in-memory `better-sqlite3` database. It does not verify provider login or relay
 credentials.

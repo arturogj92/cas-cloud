@@ -33,6 +33,7 @@ const OpencodeConversationSearchService = require('../services/opencode-conversa
 const KimiConversationSearchService = require('../services/kimi-conversation-search-service');
 const GrokConversationSearchService = require('../services/grok-conversation-search-service');
 const CursorConversationSearchService = require('../services/cursor-conversation-search-service');
+const PiConversationSearchService = require('../services/pi-conversation-search-service');
 const { projectPathsMatch } = require('../services/claude-project-path-resolver');
 const platformConfig = require('../platform/platform-config');
 const DatabaseManager = require('../database/database');
@@ -54,6 +55,7 @@ const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'project.directories.list',
   'project.locations.list',
   'project.locations.add',
+  'project.locations.edit',
   'project.update',
   'project.register',
   'project.clone',
@@ -63,7 +65,7 @@ const HEADLESS_PROJECT_CAPABILITIES = Object.freeze([
   'project.unregister',
   'shortcuts.manage',
   'session.action',
-  'tasks.list',
+  'tasks.list', 'tasks.search',
   'task.create',
   'task.update',
   'task.delete',
@@ -298,6 +300,7 @@ function createHistoryServices() {
     kimi: new KimiConversationSearchService(),
     grok: new GrokConversationSearchService(),
     cursor: new CursorConversationSearchService(),
+    pi: new PiConversationSearchService(),
   };
 }
 
@@ -534,19 +537,20 @@ function createHeadlessHost({
     return new Map(taskRevisions);
   };
 
-  const listTasks = ({ projectId, cursor, limit }) => {
+  const listTasks = ({ projectId, cursor, limit, status, query }) => {
     const project = registry.resolveProject(projectId);
     const pageSize = limit === undefined ? 25 : Number(limit);
     if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 50) {
       throw new Error('Task page size must be between 1 and 50');
     }
     const offset = decodeCursor(cursor);
-    const rows = database.getTasksByProject(project.taskProjectName, pageSize + 1, offset);
+    const { tasks: rows, counts } = database.getTaskPageByProject(project.taskProjectName, { limit: pageSize, offset, status, query });
     refreshTasksRevision();
     return {
       projectId,
       revision: taskRevisions.get(projectId) || 0,
       tasks: rows.slice(0, pageSize).map(compactTask),
+      counts,
       nextCursor: rows.length > pageSize ? encodeCursor(offset + pageSize) : null,
     };
   };

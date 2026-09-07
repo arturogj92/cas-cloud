@@ -65,7 +65,7 @@ const MAX_RETAINED_MEDIA_CHARS = 64 * 1024 * 1024;
 const MAX_MOBILE_FILE_BYTES = 64 * 1024 * 1024;
 const MAX_THUMBNAIL_CHARS = 32 * 1024;
 const ATTACHMENT_UPLOAD_TTL_MS = 15 * 60 * 1000;
-const MOBILE_AGENTS = new Set(['claude', 'codex', 'opencode', 'kimi', 'antigravity', 'grok', 'cursor']);
+const MOBILE_AGENTS = new Set(['claude', 'codex', 'opencode', 'kimi', 'antigravity', 'grok', 'cursor', 'pi']);
 const REASONING_CONFIG_IDS = new Set(['effort', 'thinking', 'reasoning_effort']);
 const MOBILE_USAGE_ACTIONS = Object.freeze({
   'session.create': 'mobile_chat_session_created',
@@ -949,6 +949,8 @@ class MobileRuntime {
       state: cleanText(operation.state, 32),
       revision: Number.isSafeInteger(operation.revision) && operation.revision >= 0 ? operation.revision : 0,
       ...(typeof operation.projectId === 'string' ? { projectId: cleanText(operation.projectId, 128) } : {}),
+      ...(Number.isFinite(operation.progress) ? { progress: Math.max(0, Math.min(100, Math.round(operation.progress))) } : {}),
+      ...(['Receiving objects', 'Resolving deltas', 'Updating files', 'Checking out files'].includes(operation.phase) ? { phase: operation.phase } : {}),
       ...(operationError ? { error: operationError } : {}),
     });
   }
@@ -1807,10 +1809,10 @@ class MobileRuntime {
     }
     if (['project.locations.list', 'project.locations.add'].includes(command.type)) {
       const adding = command.type === 'project.locations.add';
-      exactPayload(adding ? ['locationId', 'requestId'] : ['locationId', 'offset']);
+      exactPayload(adding ? ['locationId', 'childName', 'requestId'] : ['locationId', 'folderPath', 'includePath', 'offset']);
       try {
         const result = adding
-          ? await this.addProjectLocation({ locationId: payload.locationId, requestId: mutationRequestId() })
+          ? await this.addProjectLocation({ locationId: payload.locationId, childName: payload.childName, requestId: mutationRequestId() })
           : await this.listProjectLocations(payload);
         if (adding) this.publishProjects();
         return result;
@@ -1929,11 +1931,13 @@ class MobileRuntime {
     }
     if (command.type === 'tasks.list') {
       if (typeof this.listTasks !== 'function') throw new Error('Remote tasks are unavailable');
-      exactPayload(['projectId', 'cursor', 'limit']);
+      exactPayload(['projectId', 'cursor', 'limit', 'status', 'query']);
       return this.listTasks({
         projectId: cleanText(payload.projectId, 128),
         cursor: payload.cursor === null || payload.cursor === undefined ? null : cleanText(payload.cursor, 256),
-        limit: payload.limit
+        limit: payload.limit,
+        status: payload.status,
+        query: payload.query,
       });
     }
     if (command.type === 'task.create') {
@@ -2043,7 +2047,7 @@ class MobileRuntime {
         const agent = row.agent
           || (row.isCodex ? 'codex'
             : (row.isAntigravity ? 'antigravity'
-              : (row.isOpencode ? 'opencode' : (row.isKimi ? 'kimi' : (row.isGrok ? 'grok' : (row.isCursor ? 'cursor' : 'claude'))))));
+              : (row.isOpencode ? 'opencode' : (row.isKimi ? 'kimi' : (row.isGrok ? 'grok' : (row.isCursor ? 'cursor' : row.isPi ? 'pi' : 'claude'))))));
         if (!MOBILE_AGENTS.has(agent)) return [];
         const projectDir = cleanText(row.projectDir, 4096) || '';
         const project = projectsByPath.get(row.projectPath)

@@ -15,14 +15,25 @@
  * Electron portable apps having a minimal process.env.PATH.
  */
 
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const NODE_VERSION = 'v20.18.0';
+const NODE_VERSION = 'v22.19.0';
 const NODE_ARCH_BY_PROCESS = { x64: 'x64', arm64: 'arm64', ia32: 'x86' };
+
+function meetsVersion(actual, minimum) {
+  const current = String(actual || '').trim().replace(/^v/, '').split('.').map(Number);
+  const required = String(minimum || 0).split('.').map(Number);
+  if (!current.length || current.some((value) => !Number.isFinite(value))) return false;
+  for (let i = 0; i < 3; i++) {
+    const difference = (current[i] || 0) - (required[i] || 0);
+    if (difference) return difference > 0;
+  }
+  return true;
+}
 
 class NodeRuntime {
   constructor() {
@@ -67,8 +78,7 @@ class NodeRuntime {
   hostHasNodeVersion(minimumMajor, env = process.env) {
     return new Promise(resolve => {
       execFile('node', ['--version'], { env, timeout: 5000, windowsHide: true }, (error, stdout) => {
-        const match = !error && String(stdout || '').trim().match(/^v(\d+)/);
-        resolve(Boolean(match && Number(match[1]) >= minimumMajor));
+        resolve(!error && meetsVersion(stdout, minimumMajor));
       });
     });
   }
@@ -79,8 +89,12 @@ class NodeRuntime {
   }
 
   bundledMeetsVersion(minimumMajor = 0) {
-    const bundledMajor = Number.parseInt(NODE_VERSION.slice(1), 10);
-    return this.bundledExists() && bundledMajor >= minimumMajor;
+    if (!this.bundledExists()) return false;
+    if (!minimumMajor) return true;
+    try {
+      return meetsVersion(execFileSync(path.join(this.nodeDir, 'node.exe'), ['--version'],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true }), minimumMajor);
+    } catch (_) { return false; }
   }
 
   /**
@@ -163,10 +177,26 @@ class NodeRuntime {
 
     const extractedDir = path.join(this.runtimeRoot, `node-${NODE_VERSION}-win-${arch}`);
     if (fs.existsSync(extractedDir)) {
-      if (fs.existsSync(this.nodeDir)) {
-        fs.rmSync(this.nodeDir, { recursive: true, force: true });
+      if (!fs.existsSync(path.join(extractedDir, 'node.exe')) || !fs.existsSync(path.join(extractedDir, 'npm.cmd'))) {
+        throw new Error('Downloaded Node runtime is incomplete');
       }
-      fs.renameSync(extractedDir, this.nodeDir);
+      const previousDir = `${extractedDir}-previous`;
+      const upgrading = fs.existsSync(this.nodeDir);
+      if (upgrading) {
+        // Global agent packages and their command shims share this npm prefix.
+        fs.cpSync(this.nodeDir, extractedDir, {
+          recursive: true, force: false,
+          filter: (source) => !['node_modules/npm', 'node_modules/corepack'].includes(path.relative(this.nodeDir, source).split(path.sep).join('/')),
+        });
+        fs.renameSync(this.nodeDir, previousDir);
+      }
+      try {
+        fs.renameSync(extractedDir, this.nodeDir);
+      } catch (error) {
+        if (upgrading) fs.renameSync(previousDir, this.nodeDir);
+        throw error;
+      }
+      if (upgrading) fs.rmSync(previousDir, { recursive: true, force: true });
     }
 
     try { fs.unlinkSync(zipPath); } catch (e) { /* ignore */ }
@@ -175,11 +205,12 @@ class NodeRuntime {
   }
 
   async ensureInstalled(minimumMajor = 0, env = process.env) {
-    const hostReady = minimumMajor > 0
+    const hostReady = minimumMajor
       ? await this.hostHasNodeVersion(minimumMajor, env) && await this.hostHasNpm(env)
       : await this.hostHasNpm(env);
     if (process.platform !== 'win32') return hostReady;
-    if (hostReady) return true;
+    // getEnvWithNode prepends an existing bundle even when the host is newer.
+    if (hostReady && (!this.bundledExists() || this.bundledMeetsVersion(minimumMajor))) return true;
     if (this.bundledMeetsVersion(minimumMajor)) return true;
 
     if (this.bootstrapInProgress) {
@@ -235,3 +266,4 @@ class NodeRuntime {
 }
 
 module.exports = new NodeRuntime();
+module.exports.meetsVersion = meetsVersion;

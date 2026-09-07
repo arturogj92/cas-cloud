@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
+const { meetsVersion } = require('./infrastructure/services/node-runtime');
 
-if (!Number.isInteger(nodeMajor) || nodeMajor < 20) {
-  console.error(`CodeAgentSwarm requires Node.js 20 or newer; found ${process.version}.`);
+if (!meetsVersion(process.versions.node, '22.19.0')) {
+  console.error(`CAS Cloud requires Node.js 22.19.0 or newer; found ${process.version}.`);
   process.exitCode = 1;
 } else {
   const { main } = require('./cli/cas');

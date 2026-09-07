@@ -570,30 +570,20 @@ class ClaudeConversationSearchService {
      * @returns {Promise<string|null>} Working directory or null
      */
     async getWorkingDirectory(filePath) {
+        const fileStream = createReadStream(filePath, { start: 0, end: 64 * 1024 - 1 });
         try {
-            const fileStream = createReadStream(filePath);
-            const rl = readline.createInterface({
-                input: fileStream,
-                crlfDelay: Infinity
-            });
-
+            const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
             for await (const line of rl) {
-                if (line.trim()) {
-                    try {
-                        const entry = JSON.parse(line);
-                        // The cwd field contains the real project path
-                        if (entry.cwd) {
-                            return entry.cwd;
-                        }
-                    } catch (e) {
-                        // Skip invalid lines
-                    }
-                }
+                try {
+                    const entry = JSON.parse(line);
+                    if (typeof entry?.cwd === 'string' && entry.cwd) return entry.cwd;
+                } catch (_) { /* Invalid or truncated header line. */ }
             }
-
             return null;
-        } catch (error) {
+        } catch (_) {
             return null;
+        } finally {
+            fileStream.destroy();
         }
     }
 

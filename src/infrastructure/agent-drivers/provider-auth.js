@@ -26,13 +26,17 @@ const PROVIDER_AUTH = Object.freeze({
     label: 'Grok Build',
     command: 'grok login'
   },
+  pi: { label: 'Pi (beta)', command: null },
   cursor: {
     label: 'Cursor Agent',
     command: 'cursor-agent login'
   }
 });
 
+const TOKEN_REFRESH_ERROR_PATTERN = /\baccess token could not be refreshed\b/i;
+
 const AUTH_ERROR_PATTERNS = Object.freeze([
+  TOKEN_REFRESH_ERROR_PATTERN,
   /\bnot logged in\b/i,
   /\bnot signed in\b/i,
   /\bnot authenticated\b/i,
@@ -136,7 +140,13 @@ function classifyProviderAuthError(agent, error) {
   if (!message || !AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(message))) {
     return null;
   }
-  return createUnauthenticatedStatus(agent, message);
+  const status = createUnauthenticatedStatus(agent, message);
+  // A status probe can still report logged in with an unusable refresh token.
+  // Reuse logout + login so recovery also restarts the live provider session.
+  if (TOKEN_REFRESH_ERROR_PATTERN.test(message) && canSwitchAccount(agent)) {
+    status.switchAccount = true;
+  }
+  return status;
 }
 
 function classifyProviderStartupError(agent, error) {
@@ -162,7 +172,7 @@ function providerErrorLoginAction(agent, message) {
   const replaceAccount = auth?.switchAccount === true || (usageLimit && canSwitchAccount(agent));
   return {
     action: replaceAccount ? 'switch-account' : 'start',
-    label: replaceAccount ? 'Change account' : canLoginFromChat(agent) ? 'Sign in' : 'Sign-in options'
+    label: replaceAccount ? (auth?.switchAccount ? auth.actionLabel : 'Change account') : canLoginFromChat(agent) ? 'Sign in' : 'Sign-in options'
   };
 }
 

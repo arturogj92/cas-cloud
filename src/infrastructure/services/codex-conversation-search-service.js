@@ -676,7 +676,7 @@ class CodexConversationSearchService {
      * The cursor is a byte offset, so even sparse multi-GB histories never
      * require parsing the complete file just to show the latest messages.
      */
-    async getConversationContentPage(sessionId, projectDir, { before, limit = 120 } = {}) {
+    async getConversationContentPage(sessionId, projectDir, { before, limit = 120, includeInitialPrompt = false } = {}) {
         const jsonlFiles = await this.findAllJsonlFiles(this.sessionsDir);
         const targetFilePath = this.findSessionFile(jsonlFiles, sessionId);
         if (!targetFilePath) {
@@ -802,17 +802,55 @@ class CodexConversationSearchService {
         const nextCursor = selectedStart > 0
             ? messageOffsets[selectedStart]
             : earlierCursor;
-        return {
-            messages: selected.map((message, index) => ({
-                role: `${message.role}_message`,
-                text: message.content,
-                timestamp: message.timestamp,
-                index: messageOffsets[selectedStart + index],
-                ...(message.attachments?.length ? { attachments: message.attachments } : {})
-            })),
-            nextCursor,
-            hasMore: nextCursor !== null
-        };
+        const pageMessages = selected.map((message, index) => ({
+            role: `${message.role}_message`,
+            text: message.content,
+            timestamp: message.timestamp,
+            index: messageOffsets[selectedStart + index],
+            ...(message.attachments?.length ? { attachments: message.attachments } : {})
+        }));
+        // History previews keep the original request alongside recent context.
+        // Chat pagination must remain contiguous and must never prepend it.
+        // Inspect at most 2 MiB at the start; never load an entire rollout.
+        if (includeInitialPrompt && !Number.isSafeInteger(before)) {
+            const head = await fsPromises.open(targetFilePath, 'r');
+            try {
+                const buffer = Buffer.alloc(Math.min(stat.size, HISTORY_PAGE_MAX_BYTES));
+                let bytesRead = 0;
+                while (bytesRead < buffer.length) {
+                    const result = await head.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+                    if (!result.bytesRead) break;
+                    bytesRead += result.bytesRead;
+                }
+                for (let offset = 0; offset < bytesRead;) {
+                    let lineEnd = buffer.indexOf(10, offset);
+                    if (lineEnd < 0) {
+                        if (bytesRead < stat.size) break; // Ignore an incomplete event.
+                        lineEnd = bytesRead;
+                    }
+                    let message;
+                    try {
+                        message = this.extractMessageFromEvent(JSON.parse(buffer.toString('utf8', offset, lineEnd)));
+                    } catch { /* Ignore metadata and malformed events. */ }
+                    if (message?.role === 'user') {
+                        if (!pageMessages.some(item => item.index === offset)) {
+                            pageMessages.unshift({
+                                role: 'user_message',
+                                text: safePreviewString(message.content),
+                                timestamp: message.timestamp,
+                                index: offset
+                            });
+                            if (pageMessages.length > safeLimit) pageMessages.splice(1, pageMessages.length - safeLimit);
+                        }
+                        break;
+                    }
+                    offset = lineEnd + 1;
+                }
+            } finally {
+                await head.close();
+            }
+        }
+        return { messages: pageMessages, nextCursor, hasMore: nextCursor !== null };
     }
 
     /**

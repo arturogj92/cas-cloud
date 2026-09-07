@@ -3,6 +3,7 @@
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { meetsVersion } = require('../infrastructure/services/node-runtime');
 const {
   DEFAULT_TTL_MS,
   EphemeralPreviewService,
@@ -155,8 +156,7 @@ async function stop(args) {
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
-  if (!Number.isInteger(nodeMajor) || nodeMajor < 20) throw new Error(`Node.js 20 or newer is required; found ${process.version}`);
+  if (!meetsVersion(process.versions.node, '22.19.0')) throw new Error(`Node.js 22.19.0 or newer is required; found ${process.version}`);
   const args = [...argv];
   const command = args.shift();
   if (!command || ['help', '--help', '-h'].includes(command)) {

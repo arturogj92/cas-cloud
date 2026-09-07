@@ -1,5 +1,6 @@
 const MOBILE_PAIRING_EVENT = 'mobile-pairing:event';
 const { PRODUCTION_MOBILE_WEB_ORIGIN } = require('./mobile-build-channel');
+const { desktopConnectionLink } = require('./desktop-connection-link');
 
 // The relay keeps one five-minute pairing per runtime in durable storage, so a pairing
 // created ahead of time stays scannable across desktop reconnects. Refreshing it while
@@ -102,8 +103,11 @@ function registerMobilePairingIpc({
       return { success: false, error: error.message };
     }
   });
-  ipcMain.handle('mobile-pairing:create', async () => {
+  ipcMain.handle('mobile-pairing:create', async (event, { desktop = false } = {}) => {
     try {
+      if (desktop && !BrowserWindow.getAllWindows().some((window) => (
+        !window.isDestroyed() && window.webContents === event?.sender
+      ))) return { success: false, error: 'Untrusted desktop window' };
       if (getKeepAvailable() == null) setKeepAvailable(true);
       if (warming) await warming;
       if (!warm || warm.expiresAt - Date.now() < WARM_PAIRING_SERVE_MIN_REMAINING_MS) warm = await buildPairing();
@@ -114,6 +118,7 @@ function registerMobilePairingIpc({
         pairingCode: warm.pairingCode,
         webUrl: mobileWebOrigin,
         keepAvailable: getKeepAvailable() === true,
+        ...(desktop ? { connectionLink: desktopConnectionLink(warm) } : {}),
         qrDataUrl: warm.qrDataUrl
       };
     } catch (error) {

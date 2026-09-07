@@ -3,7 +3,7 @@
  *
  * Image/source previews receive only a local path hint. Source files stay
  * inside the active driver's cwd. Images may also come from the system temp
- * directory because agents place visual evidence there; every root and target
+ * directory and Downloads because agents place visual evidence there; every root and target
  * is still realpathed, containment is checked after symlink resolution, and
  * the bounded read happens through an opened file handle. HTML launching is a
  * separate, absolute-path action that validates a regular .html/.htm file and
@@ -191,6 +191,15 @@ function displayRelativePath(primaryRoot, contained, requested) {
   return path.basename(contained.target);
 }
 
+function downloadsImageRoot() {
+  try {
+    // Electron knows redirected/renamed Downloads folders on every desktop OS.
+    const directory = require('electron').app?.getPath('downloads');
+    if (directory) return directory;
+  } catch (_) { /* The shared resolver also runs in the Node-only host. */ }
+  return path.join(os.homedir(), 'Downloads');
+}
+
 async function resolveImage(root, reference, options = {}) {
   const fallback = (reason) => baseResult(reference, reason);
   const extraRoots = Array.isArray(options.extraRoots) ? options.extraRoots : [];
@@ -204,6 +213,7 @@ async function resolveImage(root, reference, options = {}) {
     root,
     ...extraRoots,
     ...temporaryRoots,
+    ...(isAbsoluteFilesystemPath(reference.path) ? [downloadsImageRoot()] : []),
     ...grokRoots
   ]);
   let lastReason = 'outside-root-or-missing';

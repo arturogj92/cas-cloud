@@ -1,6 +1,6 @@
 {
   "name": "@codeagentswarm/cas-cloud",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "description": "CAS Cloud runtime for remote CodeAgentSwarm sessions",
   "author": "Arturo Garcia <hello@codeagentswarm.com>",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -37,7 +37,7 @@
     "caddy/Caddyfile.preview.example"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "os": [
     "darwin",

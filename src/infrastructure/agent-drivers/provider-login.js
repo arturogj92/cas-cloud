@@ -23,6 +23,14 @@ const LOGIN_MODES = Object.freeze({
 });
 
 const PROVIDER_LOGIN = Object.freeze({
+  pi: {
+    mode: LOGIN_MODES.MANUAL,
+    label: 'Pi (beta)',
+    command: ['pi'],
+    terminalHint: '/login',
+    reason: 'Open Pi in CLI view, enter /login and choose a model provider. Complete sign-in, then reopen Chat to load its models. Pi uses its own login, separate from Codex and Claude.',
+    verified: '2026-09-05 · pi 0.85.1',
+  },
   claude: {
     mode: LOGIN_MODES.CLI,
     label: 'Claude Code',
@@ -126,7 +134,9 @@ function loginStrategyForRemoteAgent(agent) {
   if (strategy.mode !== LOGIN_MODES.CLI) return {
     ...strategy,
     terminalHint: null,
-    reason: `${strategy.reason || ''} Complete sign-in on the remote computer.`,
+    reason: agent === 'pi'
+      ? 'On the computer running this agent, run pi, enter /login and choose a model provider. Complete sign-in there, then retry Chat from this device. Signing in to Codex or Claude separately does not configure Pi.'
+      : `${strategy.reason || ''} Complete sign-in on the remote computer.`,
   };
   return strategy;
 }
