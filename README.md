@@ -79,6 +79,34 @@ Both options use the encrypted relay protocol. The agent host opens no public
 inbound port and exposes only the projects you register. Browser clients pair
 with a one-time code; pairing gives each device a revocable credential.
 
+## Set up your VPS with an agent
+
+You can ask an agent on your current computer to set up CAS Cloud over SSH and
+check whether your existing provider sign-ins can be reused on the VPS. This
+can save you from signing in to each provider again. Give the agent this README,
+your VPS SSH alias and the project paths you want to use, then try this prompt:
+
+```text
+Set up CAS Cloud on my VPS using SSH host <ssh-alias> and the instructions in
+https://github.com/arturogj92/cas-cloud. Register <project-paths> and configure
+it to keep running after I disconnect from SSH.
+
+Check which of my existing coding-agent credentials can be reused on that VPS.
+Transfer only compatible credentials directly over SSH to the account running
+CAS Cloud, preserving my local sign-ins and any existing VPS configuration.
+Keep credential files private and do not print secrets or put them in chat,
+logs or Git. Use each provider's normal sign-in flow if transfer is unsupported
+or the credentials do not work there.
+
+Verify authentication for each provider I plan to use, report which still need
+my input, and run cas-cli connect so I can connect from CodeAgentSwarm Desktop.
+```
+
+Credential reuse depends on the provider, its credential storage and the target
+system; it is not a universal migration feature. The agent should check support
+before copying anything and verify the result on the VPS. Signing in directly
+on the VPS is also an option, using each provider's supported login flow.
+
 ## Install
 
 Use Node.js 22.19.0 or newer, npm and Git on the machine that runs your agents.
